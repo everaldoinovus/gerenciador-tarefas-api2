@@ -14,7 +14,8 @@ async function startServer() {
   // Configuração do CORS
   // Esta lista define quais "origens" (sites) podem fazer requisições para a nossa API.
   const allowedOrigins = [
-    'http://localhost:5173', // Para desenvolvimento local
+    'http://localhost:5173', 
+	'https://gerenciador-tarefas-web.vercel.app'// Para desenvolvimento local
     // A URL do seu front-end em produção será adicionada aqui depois
     // Ex: 'https://gerenciador-tarefas-web.onrender.com'
   ];
