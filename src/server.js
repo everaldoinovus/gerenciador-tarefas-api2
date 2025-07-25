@@ -1,6 +1,8 @@
 // Carrega as variáveis de ambiente do arquivo .env para process.env
 require('dotenv').config();
 
+console.log("DATABASE_URL a ser usada pela API:", process.env.DATABASE_URL);
+
 const express = require('express');
 const cors = require('cors');
 const createMailTransporter = require('./config/mailer');
