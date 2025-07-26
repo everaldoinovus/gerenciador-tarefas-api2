@@ -1,5 +1,3 @@
-// Arquivo: gerenciador-tarefas-api/src/routes.js
-
 const express = require('express');
 const router = express.Router();
 const pool = require('./config/database');
@@ -37,7 +35,10 @@ router.delete('/setores/:id', authMiddleware, async (req, res) => {
 // TAREFAS
 router.get('/tarefas', authMiddleware, async (req, res) => {
   try {
-    const { responsavel, data } = req.body;
+    // ===== AQUI ESTÁ A CORREÇÃO =====
+    // Parâmetros de filtro em uma requisição GET vêm de req.query
+    const { responsavel, data } = req.query;
+    
     let sql = `SELECT t.*, s.nome AS setor FROM tarefas t LEFT JOIN setores s ON t.setor_id = s.id WHERE t.usuario_id = ?`;
     const values = [req.usuarioId];
     if (responsavel) { sql += ' AND t.responsavel LIKE ?'; values.push(`%${responsavel}%`); }
@@ -45,7 +46,10 @@ router.get('/tarefas', authMiddleware, async (req, res) => {
     sql += ' ORDER BY t.data_inclusao DESC;';
     const [rows] = await pool.query(sql, values);
     res.status(200).json(rows);
-  } catch (error) { res.status(500).json({ error: 'Erro interno do servidor.' }); }
+  } catch (error) { 
+    console.error("Erro ao buscar tarefas (API):", error);
+    res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); 
+  }
 });
 router.post('/tarefas', authMiddleware, async (req, res) => {
   const { descricao, responsavel, setor_id, data_prevista_conclusao } = req.body;
