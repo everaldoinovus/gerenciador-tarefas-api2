@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('./config/database');
-const { getTransporter } = require('./config/mailer'); // Importa a função para pegar o mailer
+const { getTransporter } = require('./config/mailer');
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -43,7 +43,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// ROTA DE VERIFICAÇÃO
+// ROTA DE VERIFICAÇÃO - ATUALIZADA
 router.post('/verify', async (req, res) => {
     const { email, codigo } = req.body;
     if (!email || !codigo) return res.status(400).json({ error: 'Email e código são obrigatórios.' });
@@ -54,8 +54,17 @@ router.post('/verify', async (req, res) => {
 
         const usuario = rows[0];
         if (usuario.verificado_em) return res.status(400).json({ error: 'Esta conta já foi verificada.' });
-        if (new Date() > new Date(usuario.codigo_verificacao_expira)) return res.status(400).json({ error: 'Código de verificação expirado.' });
-        if (usuario.codigo_verificacao !== codigo) return res.status(400).json({ error: 'Código de verificação inválido.' });
+
+        // Trata a data de expiração como um objeto Date para uma comparação segura
+        const dataExpiracao = new Date(usuario.codigo_verificacao_expira);
+        if (new Date() > dataExpiracao) {
+            return res.status(400).json({ error: 'Código de verificação expirado.' });
+        }
+
+        // Compara os códigos de forma insensível a maiúsculas/minúsculas para robustez
+        if (usuario.codigo_verificacao.toUpperCase() !== codigo.toUpperCase()) {
+            return res.status(400).json({ error: 'Código de verificação inválido.' });
+        }
 
         await pool.query('UPDATE usuarios SET verificado_em = ?, codigo_verificacao = NULL, codigo_verificacao_expira = NULL WHERE id = ?', [new Date(), usuario.id]);
         res.status(200).json({ message: 'Conta verificada com sucesso! Você já pode fazer o login.' });
