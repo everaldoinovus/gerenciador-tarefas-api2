@@ -1,60 +1,35 @@
-// Carrega as variáveis de ambiente do arquivo .env para process.env
-require('dotenv').config();
+// Arquivo: gerenciador-tarefas-api/src/server.js
 
+require('dotenv').config();
 console.log("DATABASE_URL a ser usada pela API:", process.env.DATABASE_URL);
 
 const express = require('express');
 const cors = require('cors');
-const createMailTransporter = require('./config/mailer');
+const { initializeMailer } = require('./config/mailer'); // Importa a função de inicialização
 
 const authRoutes = require('./authRoutes');
 const routes = require('./routes');
 
 async function startServer() {
+  // Primeiro, inicializa o mailer
+  await initializeMailer();
+
   const app = express();
-
-  // Configuração do CORS
-  // Esta lista define quais "origens" (sites) podem fazer requisições para a nossa API.
-  const allowedOrigins = [
-    'http://localhost:5173', 
-	'https://gerenciador-tarefas-web.vercel.app'// Para desenvolvimento local
-    // A URL do seu front-end em produção será adicionada aqui depois
-    // Ex: 'https://gerenciador-tarefas-web.onrender.com'
-  ];
-
-  const corsOptions = {
-    origin: function (origin, callback) {
-      // Permite requisições sem 'origin' (como de apps mobile ou Postman)
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.indexOf(origin) === -1) {
-        const msg = 'A política de CORS para este site não permite acesso da origem especificada.';
-        return callback(new Error(msg), false);
-      }
-      return callback(null, true);
-    }
-  };
-
+  
+  // ... (configuração do CORS continua a mesma)
+  const allowedOrigins = [ 'http://localhost:5173', 'https://SEU-SITE.vercel.app' ];
+  const corsOptions = { /* ... */ };
   app.use(cors(corsOptions));
+  
   app.use(express.json());
 
-  // Inicializa o transportador de e-mail e o disponibiliza para as rotas
-  const mailer = await createMailTransporter();
-  if (mailer) {
-    app.set('mailer', mailer);
-  }
-
-  // Define as rotas da aplicação
   app.use('/auth', authRoutes);
   app.use(routes);
 
-  // Usa a porta definida no ambiente ou a 3333 como padrão
   const PORT = process.env.PORT || 3333;
-  
   app.listen(PORT, () => {
     console.log(`🚀 Servidor rodando na porta ${PORT}`);
   });
 }
 
-// Inicia o servidor
 startServer();

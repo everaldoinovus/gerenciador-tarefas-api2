@@ -1,34 +1,40 @@
+// Arquivo: gerenciador-tarefas-api/src/config/mailer.js
+
 const nodemailer = require('nodemailer');
 
-// Função assíncrona para configurar e exportar o transportador
-async function createMailTransporter() {
+let transporterInstance = null;
+
+async function initializeMailer() {
+  // Se a instância já foi criada, não faz nada
+  if (transporterInstance) {
+    return transporterInstance;
+  }
+
   try {
-    // Cria uma conta de teste no Ethereal
     const testAccount = await nodemailer.createTestAccount();
 
-    // Configura o transportador usando os dados da conta de teste
-    const transporter = nodemailer.createTransport({
+    transporterInstance = nodemailer.createTransport({
       host: 'smtp.ethereal.email',
       port: 587,
-      secure: false, // true para 465, false para outras portas
+      secure: false,
       auth: {
-        user: testAccount.user, // Usuário gerado pelo Ethereal
-        pass: testAccount.pass, // Senha gerada pelo Ethereal
+        user: testAccount.user,
+        pass: testAccount.pass,
       },
     });
 
-    console.log('Conta de e-mail de teste criada com sucesso.');
-    console.log(`Para visualizar os e-mails, acesse: ${nodemailer.getTestMessageUrl(null)}`);
-    console.log(`Usuário: ${testAccount.user}`);
-    console.log(`Senha: ${testAccount.pass}`);
+    console.log('✅ Mailer de teste Ethereal inicializado com sucesso.');
+    console.log(`📬 Para visualizar os e-mails, acesse: ${nodemailer.getTestMessageUrl({ user: testAccount.user, pass: testAccount.pass })}`);
 
-
-    return transporter;
+    return transporterInstance;
   } catch (error) {
-    console.error('Falha ao criar conta de e-mail de teste:', error);
+    console.error('❌ Falha ao inicializar o mailer de teste:', error);
     return null;
   }
 }
 
-// Exportamos a função para que possamos chamá-la no início da aplicação
-module.exports = createMailTransporter;
+// Exportamos a função de inicialização e a instância (que será preenchida)
+module.exports = {
+  initializeMailer,
+  getTransporter: () => transporterInstance,
+};

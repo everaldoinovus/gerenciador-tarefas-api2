@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('./config/database');
+const { getTransporter } = require('./config/mailer'); // Importa a função para pegar o mailer
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -16,13 +17,24 @@ router.post('/register', async (req, res) => {
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const codigoVerificacao = crypto.randomBytes(3).toString('hex').toUpperCase();
-    const codigoVerificacaoExpira = new Date(Date.now() + 60 * 60 * 1000);
+    const codigoVerificacaoExpira = new Date(Date.now() + 60 * 60 * 1000); // Expira em 1 hora
 
     const sql = 'INSERT INTO usuarios (email, senha_hash, codigo_verificacao, codigo_verificacao_expira) VALUES (?, ?, ?, ?)';
     await pool.query(sql, [email, senhaHash, codigoVerificacao, codigoVerificacaoExpira]);
 
-    const mailer = req.app.get('mailer');
-    if (mailer) { /* ...código do mailer ... */ }
+    const mailer = getTransporter();
+    if (mailer) {
+      await mailer.sendMail({
+        from: '"Gerenciador de Tarefas" <no-reply@gerenciador.com>',
+        to: email,
+        subject: 'Código de Verificação de Conta',
+        html: `<p>Olá! Seu código de verificação é: <strong>${codigoVerificacao}</strong></p><p>Este código expira em 1 hora.</p>`,
+      });
+      console.log(`📬 E-mail de verificação para ${email} enviado com sucesso.`);
+    } else {
+      console.error('❌ Mailer não está disponível. O e-mail de verificação não foi enviado.');
+    }
+
     res.status(201).json({ message: 'Usuário registrado! Um código de verificação foi enviado para o seu e-mail.' });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Este email já está em uso.' });
