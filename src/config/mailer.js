@@ -5,35 +5,41 @@ const nodemailer = require('nodemailer');
 let transporterInstance = null;
 
 async function initializeMailer() {
-  // Se a instância já foi criada, não faz nada
   if (transporterInstance) {
     return transporterInstance;
   }
 
-  try {
-    const testAccount = await nodemailer.createTestAccount();
+  // Pega as credenciais das variáveis de ambiente
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
 
+  // Se as credenciais não estiverem definidas, não inicializa
+  if (!user || !pass) {
+    console.warn('⚠️  Credenciais do Gmail não configuradas nas variáveis de ambiente. O envio de e-mail está desativado.');
+    return null;
+  }
+
+  try {
     transporterInstance = nodemailer.createTransport({
-      host: 'smtp.ethereal.email',
+      service: 'gmail',
+      host: 'smtp.gmail.com',
       port: 587,
       secure: false,
       auth: {
-        user: testAccount.user,
-        pass: testAccount.pass,
+        user: user, // Seu e-mail do Gmail
+        pass: pass, // A senha de app de 16 letras
       },
     });
 
-    console.log('✅ Mailer de teste Ethereal inicializado com sucesso.');
-    console.log(`📬 Para visualizar os e-mails, acesse: ${nodemailer.getTestMessageUrl({ user: testAccount.user, pass: testAccount.pass })}`);
-
+    console.log('✅ Mailer do Gmail inicializado com sucesso.');
     return transporterInstance;
+
   } catch (error) {
-    console.error('❌ Falha ao inicializar o mailer de teste:', error);
+    console.error('❌ Falha ao inicializar o mailer do Gmail:', error);
     return null;
   }
 }
 
-// Exportamos a função de inicialização e a instância (que será preenchida)
 module.exports = {
   initializeMailer,
   getTransporter: () => transporterInstance,
