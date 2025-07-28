@@ -5,7 +5,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('./config/database');
-const { getTransporter } = require('./config/mailer');
+// Importa ambas as funções do nosso módulo mailer
+const { initializeMailer, getTransporter } = require('./config/mailer');
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -17,12 +18,15 @@ router.post('/register', async (req, res) => {
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const codigoVerificacao = crypto.randomBytes(3).toString('hex').toUpperCase();
-    const codigoVerificacaoExpira = new Date(Date.now() + 60 * 60 * 1000); // Expira em 1 hora
+    const codigoVerificacaoExpira = new Date(Date.now() + 60 * 60 * 1000);
 
     const sql = 'INSERT INTO usuarios (email, senha_hash, codigo_verificacao, codigo_verificacao_expira) VALUES (?, ?, ?, ?)';
     await pool.query(sql, [email, senhaHash, codigoVerificacao, codigoVerificacaoExpira]);
 
-    const mailer = getTransporter();
+    // Tenta inicializar o mailer. A função interna garante que isso só aconteça uma vez.
+    await initializeMailer();
+    const mailer = getTransporter(); // Pega a instância que foi inicializada.
+
     if (mailer) {
       await mailer.sendMail({
         from: '"Gerenciador de Tarefas" <no-reply@gerenciador.com>',
@@ -32,7 +36,7 @@ router.post('/register', async (req, res) => {
       });
       console.log(`📬 E-mail de verificação para ${email} enviado com sucesso.`);
     } else {
-      console.error('❌ Mailer não está disponível. O e-mail de verificação não foi enviado.');
+      console.error('❌ Mailer não pôde ser inicializado. O e-mail de verificação não foi enviado.');
     }
 
     res.status(201).json({ message: 'Usuário registrado! Um código de verificação foi enviado para o seu e-mail.' });
@@ -43,7 +47,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// ROTA DE VERIFICAÇÃO - ATUALIZADA
+// ROTA DE VERIFICAÇÃO
 router.post('/verify', async (req, res) => {
     const { email, codigo } = req.body;
     if (!email || !codigo) return res.status(400).json({ error: 'Email e código são obrigatórios.' });
@@ -55,13 +59,11 @@ router.post('/verify', async (req, res) => {
         const usuario = rows[0];
         if (usuario.verificado_em) return res.status(400).json({ error: 'Esta conta já foi verificada.' });
 
-        // Trata a data de expiração como um objeto Date para uma comparação segura
         const dataExpiracao = new Date(usuario.codigo_verificacao_expira);
         if (new Date() > dataExpiracao) {
             return res.status(400).json({ error: 'Código de verificação expirado.' });
         }
 
-        // Compara os códigos de forma insensível a maiúsculas/minúsculas para robustez
         if (usuario.codigo_verificacao.toUpperCase() !== codigo.toUpperCase()) {
             return res.status(400).json({ error: 'Código de verificação inválido.' });
         }
