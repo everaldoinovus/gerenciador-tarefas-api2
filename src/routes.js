@@ -14,7 +14,42 @@ router.get('/setores/:id/membros', authMiddleware, checkMembership, async (req, 
 router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; try { await pool.query('DELETE FROM setores WHERE id = ?', [setorId]); res.status(200).json({ message: 'Setor e todas as suas tarefas foram deletados!' }); } catch (error) { res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' }); } });
 router.post('/setores/:id/status', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: setorId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [maxOrder] = await pool.query('SELECT MAX(ordem) as max_ordem FROM status WHERE setor_id = ?', [setorId]); const novaOrdem = (maxOrder[0].max_ordem || 0) + 1; const [result] = await pool.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [nome, setorId, novaOrdem]); res.status(201).json({ message: 'Status criado!', id: result.insertId, ordem: novaOrdem, nome: nome }); } catch (error) { res.status(500).json({ error: 'Erro ao criar status.' }); } });
 router.put('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [result] = await pool.query('UPDATE status SET nome = ? WHERE id = ?', [nome, statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); res.status(200).json({ message: 'Status atualizado!' }); } catch (error) { res.status(500).json({ error: 'Erro ao atualizar status.' }); } });
-router.delete('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; try { const [result] = await pool.query('DELETE FROM status WHERE id = ?', [statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); } catch (error) { if (error.code === 'ER_ROW_IS_REFERENCED_2') { return res.status(400).json({ error: 'Não é possível deletar um status que contém tarefas.' }); } res.status(500).json({ error: 'Erro ao deletar status.' }); } });
+//router.delete('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; try { const [result] = await pool.query('DELETE FROM status WHERE id = ?', [statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); } catch (error) { if (error.code === 'ER_ROW_IS_REFERENCED_2') { return res.status(400).json({ error: 'Não é possível deletar um status que contém tarefas.' }); } res.status(500).json({ error: 'Erro ao deletar status.' }); } });
+router.delete('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => {
+    const { id: statusId } = req.params;
+    
+    // PONTO DE VERIFICAÇÃO 1 (API): A requisição chegou?
+    console.log(`[LOG API] PASSO 1: Recebida requisição DELETE /status/${statusId}`);
+
+    try {
+        // PONTO DE VERIFICAÇÃO 2 (API): Antes de consultar o banco
+        console.log(`[LOG API] PASSO 2: Executando query 'DELETE FROM status WHERE id = ${statusId}'`);
+
+        const [result] = await pool.query('DELETE FROM status WHERE id = ?', [statusId]);
+        
+        // PONTO DE VERIFICAÇÃO 3 (API): Após a consulta
+        console.log(`[LOG API] PASSO 3: Query executada. Linhas afetadas: ${result.affectedRows}`);
+
+        if (result.affectedRows === 0) {
+            console.log(`[LOG API] PASSO 4: Status não encontrado. Retornando 404.`);
+            return res.status(404).json({ error: 'Status não encontrado.' });
+        }
+
+        console.log(`[LOG API] PASSO 5: Sucesso! Retornando 200.`);
+        res.status(200).json({ message: 'Status deletado!' });
+
+    } catch (error) {
+        // PONTO DE VERIFICAÇÃO 6 (API): Em caso de erro
+        console.error("[LOG API] PASSO 6 - ERRO:", error);
+
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ error: 'Não é possível deletar. Mova as tarefas desta coluna antes de excluí-la.' });
+        }
+        res.status(500).json({ error: 'Erro interno do servidor.' });
+    }
+});
+
+
 router.get('/convites', authMiddleware, async (req, res) => { try { const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [req.usuarioId]); if (userRows.length === 0) { return res.status(200).json([]); } const userEmail = userRows[0].email; const sql = ` SELECT c.id AS convite_id, s.id AS setor_id, s.nome AS setor_nome FROM convites c JOIN setores s ON c.setor_id = s.id WHERE c.email_convidado = ? AND c.status = 'pendente' `; const [convites] = await pool.query(sql, [userEmail]); res.status(200).json(convites); } catch (error) { console.error("Erro ao listar convites:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.post('/convites/:id/aceitar', authMiddleware, async (req, res) => { const { id: conviteId } = req.params; const usuarioId = req.usuarioId; let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [usuarioId]); const [inviteRows] = await pool.query('SELECT * FROM convites WHERE id = ?', [conviteId]); if (inviteRows.length === 0) { await connection.rollback(); return res.status(404).json({ error: 'Convite não encontrado.' }); } const convite = inviteRows[0]; const userEmail = userRows[0].email; if (convite.email_convidado !== userEmail || convite.status !== 'pendente') { await connection.rollback(); return res.status(403).json({ error: 'Este convite não é válido para você.' }); } await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, convite.setor_id, 'membro']); await connection.query("UPDATE convites SET status = 'aceito' WHERE id = ?", [conviteId]); await connection.commit(); res.status(200).json({ message: 'Convite aceito! Você agora é membro do setor.' }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') { return res.status(409).json({ error: 'Você já é membro deste setor.' }); } console.error("Erro ao aceitar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.get('/tarefas', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT t.*, s.nome AS setor_nome, st.nome AS status_nome, u.email AS responsavel_email FROM tarefas t JOIN setores s ON t.setor_id = s.id JOIN status st ON t.status_id = st.id LEFT JOIN usuarios u ON t.responsavel_id = u.id WHERE t.setor_id IN ( SELECT setor_id FROM usuarios_setores WHERE usuario_id = ? ) `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao buscar tarefas (API):", error); res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); } });
