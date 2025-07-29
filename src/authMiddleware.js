@@ -1,41 +1,52 @@
-const jwt = require('jsonwebtoken');
+// Arquivo: gerenciador-tarefas-api/src/authMiddleware.js
 
-// A mesma chave secreta que usamos para criar o token
+const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET;
 
-const authMiddleware = (request, response, next) => {
-  // O token geralmente vem no cabeçalho 'Authorization' no formato 'Bearer TOKEN'
-  const authHeader = request.headers.authorization;
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
 
-  // 1. Verifica se o cabeçalho de autorização existe
   if (!authHeader) {
-    return response.status(401).json({ error: 'Token não fornecido.' });
+    return res.status(401).json({ error: 'Token não fornecido.' });
   }
 
-  // 2. Separa a palavra 'Bearer' do token em si
   const parts = authHeader.split(' ');
   if (parts.length !== 2) {
-    return response.status(401).json({ error: 'Erro no formato do token.' });
+    return res.status(401).json({ error: 'Erro no formato do token.' });
   }
 
   const [scheme, token] = parts;
   if (!/^Bearer$/i.test(scheme)) {
-    return response.status(401).json({ error: 'Token mal formatado.' });
+    return res.status(401).json({ error: 'Token mal formatado.' });
   }
 
-  // 3. Verifica se o token é válido
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) {
-      return response.status(401).json({ error: 'Token inválido ou expirado.' });
+      return res.status(401).json({ error: 'Token inválido ou expirado.' });
     }
 
-    // 4. Se o token for válido, adicionamos o ID do usuário na requisição
-    // para que as rotas seguintes saibam quem é o usuário logado.
-    request.usuarioId = decoded.usuarioId;
+    // Anexa as informações do usuário à requisição
+    req.usuarioId = decoded.usuarioId;
+    req.funcaoGlobal = decoded.funcaoGlobal; // Anexa a função global do token
 
-    // 5. Deixa a requisição continuar para a próxima etapa (a rota)
     return next();
   });
 };
 
-module.exports = authMiddleware;
+// NOVO MIDDLEWARE DE VERIFICAÇÃO DE FUNÇÃO GLOBAL
+const checkGlobalRole = (roles) => {
+  return (req, res, next) => {
+    // Verifica se a função global do usuário (anexada pelo authMiddleware)
+    // está incluída na lista de funções permitidas.
+    if (!roles.includes(req.funcaoGlobal)) {
+      return res.status(403).json({ error: 'Acesso negado: você não tem permissão para esta ação.' });
+    }
+    next();
+  };
+};
+
+// Exporta um objeto com os dois middlewares
+module.exports = {
+  authMiddleware,
+  checkGlobalRole,
+};

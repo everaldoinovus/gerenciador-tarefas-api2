@@ -9,33 +9,23 @@ const { getTransporter, initializeMailer } = require('./config/mailer');
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// ROTA DE REGISTRO
 router.post('/register', async (req, res) => {
   const { email, senha } = req.body;
   if (!email || !senha) return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
-
   try {
     const senhaHash = await bcrypt.hash(senha, 10);
     const codigoVerificacao = crypto.randomBytes(3).toString('hex').toUpperCase();
     const codigoVerificacaoExpira = new Date(Date.now() + 60 * 60 * 1000);
-
     const sql = 'INSERT INTO usuarios (email, senha_hash, codigo_verificacao, codigo_verificacao_expira) VALUES (?, ?, ?, ?)';
     await pool.query(sql, [email, senhaHash, codigoVerificacao, codigoVerificacaoExpira]);
-
     await initializeMailer();
     const mailer = getTransporter();
     if (mailer) {
-      await mailer.sendMail({
-        from: '"Gerenciador de Tarefas" <no-reply@gerenciador.com>',
-        to: email,
-        subject: 'Código de Verificação de Conta',
-        html: `<p>Olá! Seu código de verificação é: <strong>${codigoVerificacao}</strong></p><p>Este código expira em 1 hora.</p>`,
-      });
+      await mailer.sendMail({ from: '"Gerenciador de Tarefas" <no-reply@gerenciador.com>', to: email, subject: 'Código de Verificação de Conta', html: `<p>Olá! Seu código de verificação é: <strong>${codigoVerificacao}</strong></p><p>Este código expira em 1 hora.</p>`, });
       console.log(`📬 E-mail de verificação para ${email} enviado com sucesso.`);
     } else {
       console.error('❌ Mailer não está disponível. O e-mail de verificação não foi enviado.');
     }
-
     res.status(201).json({ message: 'Usuário registrado! Um código de verificação foi enviado para o seu e-mail.' });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Este email já está em uso.' });
@@ -44,7 +34,6 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// ROTA DE VERIFICAÇÃO
 router.post('/verify', async (req, res) => {
     const { email, codigo } = req.body;
     if (!email || !codigo) return res.status(400).json({ error: 'Email e código são obrigatórios.' });
@@ -64,12 +53,11 @@ router.post('/verify', async (req, res) => {
     }
 });
 
-// ROTA DE LOGIN
 router.post('/login', async (req, res) => {
   const { email, senha } = req.body;
   if (!email || !senha) return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
   try {
-    const [rows] = await pool.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+    const [rows] = await pool.query('SELECT id, senha_hash, verificado_em, funcao_global FROM usuarios WHERE email = ?', [email]);
     if (rows.length === 0) return res.status(401).json({ error: 'Credenciais inválidas.' });
     const usuario = rows[0];
     if (!usuario.verificado_em) {
@@ -77,7 +65,13 @@ router.post('/login', async (req, res) => {
     }
     const senhaCorreta = await bcrypt.compare(senha, usuario.senha_hash);
     if (!senhaCorreta) return res.status(401).json({ error: 'Credenciais inválidas.' });
-    const token = jwt.sign({ usuarioId: usuario.id, funcaoGlobal: usuario.funcao_global }, JWT_SECRET, { expiresIn: '1h' });
+    
+    const tokenPayload = {
+      usuarioId: usuario.id,
+      funcaoGlobal: usuario.funcao_global
+    };
+
+    const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '1h' });
     res.status(200).json({ token: token });
   } catch (error) {
     console.error('Erro no login:', error);
