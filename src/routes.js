@@ -1,4 +1,4 @@
-// Arquivo: gerenciador-tarefas-api/src/routes.js
+// Arquivo: gerenciador-tarefas-api/src.routes.js
 
 const express = require('express');
 const router = express.Router();
@@ -6,19 +6,12 @@ const pool = require('./config/database');
 const { authMiddleware, checkGlobalRole } = require('./authMiddleware');
 
 const checkMembership = async (req, res, next) => {
-    let setorId;
-    if (req.body.setor_id) {
-        setorId = req.body.setor_id;
-    } else if (req.params.id) {
-        const resourceId = req.params.id;
+    let setorId = req.params.id || req.body.setor_id;
+    if (!setorId && req.params.id) {
         try {
-            if (req.path.includes('/tarefas/')) {
-                const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]);
-                if (taskRows.length > 0) {
-                    setorId = taskRows[0].setor_id;
-                }
-            } else {
-                setorId = resourceId;
+            const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [req.params.id]);
+            if (taskRows.length > 0) {
+                setorId = taskRows[0].setor_id;
             }
         } catch (e) {
             return res.status(500).json({ error: 'Erro interno.' });
@@ -43,6 +36,9 @@ const checkOwnership = (req, res, next) => {
     next();
 };
 
+// ===============================================
+// ROTAS DE SETORES
+// ===============================================
 router.post('/setores', authMiddleware, checkGlobalRole(['master']), async (req, res) => {
     const { nome } = req.body;
     const usuarioId = req.usuarioId;
@@ -116,9 +112,12 @@ router.post('/setores/:id/convidar', authMiddleware, checkMembership, checkOwner
     }
 });
 
-router.get('/setores/:id/membros', authMiddleware, checkMembership, async (req, res) => {
+router.get('/setores/:id/membros', authMiddleware, async (req, res) => {
     const { id: setorId } = req.params;
+    const usuarioId = req.usuarioId;
     try {
+        const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]);
+        if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado. Você não tem permissão para ver os membros deste setor.' });
         const sql = ` SELECT u.id, u.email, us.funcao FROM usuarios u JOIN usuarios_setores us ON u.id = us.usuario_id WHERE us.setor_id = ? ORDER BY u.email`;
         const [members] = await pool.query(sql, [setorId]);
         res.status(200).json(members);
