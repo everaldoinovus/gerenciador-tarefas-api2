@@ -22,7 +22,7 @@ router.get('/convites', authMiddleware, async (req, res) => { try { const [userR
 router.post('/convites/:id/aceitar', authMiddleware, async (req, res) => { const { id: conviteId } = req.params; const usuarioId = req.usuarioId; let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [usuarioId]); const [inviteRows] = await pool.query('SELECT * FROM convites WHERE id = ?', [conviteId]); if (inviteRows.length === 0) { await connection.rollback(); return res.status(404).json({ error: 'Convite não encontrado.' }); } const convite = inviteRows[0]; const userEmail = userRows[0].email; if (convite.email_convidado !== userEmail || convite.status !== 'pendente') { await connection.rollback(); return res.status(403).json({ error: 'Este convite não é válido para você.' }); } await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, convite.setor_id, 'membro']); await connection.query("UPDATE convites SET status = 'aceito' WHERE id = ?", [conviteId]); await connection.commit(); res.status(200).json({ message: 'Convite aceito! Você agora é membro do setor.' }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') { return res.status(409).json({ error: 'Você já é membro deste setor.' }); } console.error("Erro ao aceitar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.get('/tarefas', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT t.*, s.nome AS setor_nome, st.nome AS status_nome, u.email AS responsavel_email FROM tarefas t JOIN setores s ON t.setor_id = s.id JOIN status st ON t.status_id = st.id LEFT JOIN usuarios u ON t.responsavel_id = u.id WHERE t.setor_id IN ( SELECT setor_id FROM usuarios_setores WHERE usuario_id = ? ) `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao buscar tarefas (API):", error); res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); } });
 router.post('/tarefas', authMiddleware, async (req, res) => { const { descricao, responsavel_id, setor_id, data_prevista_conclusao } = req.body; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setor_id]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado a este setor.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [statusRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [setor_id]); if (statusRows.length === 0) { await connection.rollback(); return res.status(400).json({ error: 'Este setor não tem nenhum status configurado.' }); } const statusInicialId = statusRows[0].id; const tarefaSql = `INSERT INTO tarefas (descricao, responsavel_id, setor_id, status_id, data_prevista_conclusao) VALUES (?, ?, ?, ?, ?);`; const values = [descricao, responsavel_id || null, setor_id, statusInicialId, data_prevista_conclusao]; const [result] = await connection.query(tarefaSql, values); const novaTarefaId = result.insertId; const historySql = 'INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)'; await connection.query(historySql, [novaTarefaId, null, statusInicialId, usuarioId]); await connection.commit(); res.status(201).json({ message: 'Tarefa criada!', id: novaTarefaId }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao criar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } } catch (permError) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } });
-router.put('/tarefas/:id', authMiddleware, async (req, res) => { 
+/*router.put('/tarefas/:id', authMiddleware, async (req, res) => { 
 	const { id: tarefaId } = req.params; 
 	const updates = req.body; 
 	const usuarioId = req.usuarioId; 
@@ -74,7 +74,77 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
 		if (connection) connection.release(); 
 		} 
 	});
-	
+	*/
+router.put('/tarefas/:id', authMiddleware, async (req, res) => {
+    const { id: tarefaId } = req.params;
+    const updates = req.body;
+    const usuarioId = req.usuarioId;
+    
+    console.log(`[LOG PUT /tarefas/${tarefaId}] 1. Recebida requisição para atualizar tarefa.`);
+    console.log(`[LOG PUT] Usuário ID: ${usuarioId}`);
+    console.log(`[LOG PUT] Dados recebidos:`, updates);
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        console.log(`[LOG PUT] 2. Buscando tarefa atual no banco...`);
+        const [taskRows] = await connection.query('SELECT * FROM tarefas WHERE id = ?', [tarefaId]);
+        
+        if (taskRows.length === 0) {
+            console.log(`[LOG PUT] ERRO: Tarefa ${tarefaId} não encontrada.`);
+            await connection.rollback();
+            return res.status(404).json({ error: 'Tarefa não encontrada.' });
+        }
+        const tarefaAtual = taskRows[0];
+        const setorAtualId = tarefaAtual.setor_id;
+        console.log(`[LOG PUT] 3. Tarefa encontrada. Pertence ao Setor ID: ${setorAtualId}`);
+
+        console.log(`[LOG PUT] 4. Verificando permissão do Usuário ${usuarioId} no Setor ${setorAtualId}...`);
+        const [permRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorAtualId]);
+        
+        if (permRows.length === 0) {
+            console.log(`[LOG PUT] ERRO: Permissão negada.`);
+            await connection.rollback();
+            return res.status(403).json({ error: 'Acesso negado para editar tarefas neste setor.' });
+        }
+        console.log(`[LOG PUT] 5. Permissão concedida.`);
+		if (updates.setor_id && updates.setor_id !== setorAtualId) { 
+			const [destPermRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, updates.setor_id]); 
+			if (destPermRows.length === 0) { 
+				await connection.rollback(); 
+				return res.status(403).json({ error: 'Acesso negado ao setor de destino.' }); 
+			} 
+		} 
+		const statusAtualId = tarefaAtual.status_id;
+        const fieldsToUpdate = Object.keys(updates);
+        if (fieldsToUpdate.length === 0) { /* ... */ }
+        const setClause = fieldsToUpdate.map(field => `${field} = ?`).join(', ');
+        const values = fieldsToUpdate.map(field => updates[field]);
+        values.push(tarefaId);
+
+        console.log(`[LOG PUT] 6. Executando query de UPDATE...`);
+        const updateSql = `UPDATE tarefas SET ${setClause} WHERE id = ?`;
+        await connection.query(updateSql, values);
+        console.log(`[LOG PUT] 7. Query de UPDATE executada com sucesso.`);
+		if (updates.status_id && updates.status_id !== statusAtualId) { 
+			const historySql = 'INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)'; 
+			await connection.query(historySql, [tarefaId, statusAtualId, updates.status_id, usuarioId]); 
+		} 
+		await connection.commit();
+        console.log(`[LOG PUT] 8. Commit realizado. Retornando 200.`);
+        res.status(200).json({ message: 'Tarefa atualizada!' });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("[LOG PUT] ERRO FATAL:", error);
+        res.status(500).json({ error: 'Erro interno do servidor.' });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
 router.delete('/tarefas/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: tarefaId } = req.params; try { const [result] = await pool.query('DELETE FROM tarefas WHERE id = ?', [tarefaId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Tarefa não encontrada.' }); res.status(200).json({ message: 'Tarefa deletada!' }); } catch (error) { console.error("Erro ao deletar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.get('/tarefas/:id/historico', authMiddleware, async (req, res) => { const { id: tarefaId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = (SELECT setor_id FROM tarefas WHERE id = ?)', [usuarioId, tarefaId]); if (permRows.length === 0) { return res.status(403).json({ error: 'Acesso negado a esta tarefa.' }); } const sql = ` SELECT h.status_anterior_id, st_ant.nome as status_anterior_nome, h.status_novo_id, st_novo.nome as status_novo_nome, h.data_alteracao, u.email AS usuario_alteracao_email FROM historico_status_tarefas h JOIN usuarios u ON h.usuario_alteracao_id = u.id LEFT JOIN status st_ant ON h.status_anterior_id = st_ant.id JOIN status st_novo ON h.status_novo_id = st_novo.id WHERE h.tarefa_id = ? ORDER BY h.data_alteracao ASC; `; const [history] = await pool.query(sql, [tarefaId]); res.status(200).json(history); } catch (error) { console.error("Erro ao buscar histórico da tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
