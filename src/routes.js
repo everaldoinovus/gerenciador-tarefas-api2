@@ -145,7 +145,52 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
     }
 });
 
-router.delete('/tarefas/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: tarefaId } = req.params; try { const [result] = await pool.query('DELETE FROM tarefas WHERE id = ?', [tarefaId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Tarefa não encontrada.' }); res.status(200).json({ message: 'Tarefa deletada!' }); } catch (error) { console.error("Erro ao deletar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
+/*router.delete('/tarefas/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: tarefaId } = req.params; try { const [result] = await pool.query('DELETE FROM tarefas WHERE id = ?', [tarefaId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Tarefa não encontrada.' }); res.status(200).json({ message: 'Tarefa deletada!' }); } catch (error) { console.error("Erro ao deletar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
+*/
+router.delete('/tarefas/:id', authMiddleware, async (req, res) => {
+    const { id: tarefaId } = req.params;
+    const usuarioId = req.usuarioId;
+    
+    console.log(`[LOG DELETE /tarefas/${tarefaId}] 1. Recebida requisição para deletar tarefa.`);
+    console.log(`[LOG DELETE] Usuário ID: ${usuarioId}`);
+
+    try {
+        console.log(`[LOG DELETE] 2. Buscando setor da tarefa...`);
+        const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [tarefaId]);
+        if (taskRows.length === 0) {
+            console.log(`[LOG DELETE] ERRO: Tarefa ${tarefaId} não encontrada.`);
+            return res.status(404).json({ error: 'Tarefa não encontrada.' });
+        }
+        const setorId = taskRows[0].setor_id;
+        console.log(`[LOG DELETE] 3. Tarefa pertence ao Setor ID: ${setorId}`);
+
+        console.log(`[LOG DELETE] 4. Verificando se o Usuário ${usuarioId} é 'dono' ou 'master' do Setor ${setorId}...`);
+        const [permRows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]);
+        
+        // A permissão para deletar é ser 'dono' do setor OU ter a função global 'master'
+        if ((permRows.length === 0 || permRows[0].funcao !== 'dono') && req.funcaoGlobal !== 'master') {
+            console.log(`[LOG DELETE] ERRO: Permissão negada. Função no setor: ${permRows[0]?.funcao}, Função Global: ${req.funcaoGlobal}`);
+            return res.status(403).json({ error: 'Acesso negado. Apenas o dono do setor pode deletar tarefas.' });
+        }
+        console.log(`[LOG DELETE] 5. Permissão concedida.`);
+
+        console.log(`[LOG DELETE] 6. Executando query de DELETE...`);
+        const [result] = await pool.query('DELETE FROM tarefas WHERE id = ?', [tarefaId]);
+        if (result.affectedRows === 0) {
+            console.log(`[LOG DELETE] ERRO: A query de DELETE não afetou nenhuma linha.`);
+            return res.status(404).json({ error: 'Tarefa não encontrada durante a exclusão.' });
+        }
+
+        console.log(`[LOG DELETE] 7. Sucesso! Retornando 200.`);
+        res.status(200).json({ message: 'Tarefa deletada!' });
+    } catch (error) {
+        console.error("[LOG DELETE] ERRO FATAL:", error);
+        res.status(500).json({ error: 'Erro interno do servidor.' });
+    }
+});
+
+
+
 router.get('/tarefas/:id/historico', authMiddleware, async (req, res) => { const { id: tarefaId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = (SELECT setor_id FROM tarefas WHERE id = ?)', [usuarioId, tarefaId]); if (permRows.length === 0) { return res.status(403).json({ error: 'Acesso negado a esta tarefa.' }); } const sql = ` SELECT h.status_anterior_id, st_ant.nome as status_anterior_nome, h.status_novo_id, st_novo.nome as status_novo_nome, h.data_alteracao, u.email AS usuario_alteracao_email FROM historico_status_tarefas h JOIN usuarios u ON h.usuario_alteracao_id = u.id LEFT JOIN status st_ant ON h.status_anterior_id = st_ant.id JOIN status st_novo ON h.status_novo_id = st_novo.id WHERE h.tarefa_id = ? ORDER BY h.data_alteracao ASC; `; const [history] = await pool.query(sql, [tarefaId]); res.status(200).json(history); } catch (error) { console.error("Erro ao buscar histórico da tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
 module.exports = router;
