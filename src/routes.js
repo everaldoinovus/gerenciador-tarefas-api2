@@ -1,5 +1,5 @@
 // Arquivo: gerenciador-tarefas-api/src.routes.js
-
+/*
 const express = require('express');
 const router = express.Router();
 const pool = require('./config/database');
@@ -106,11 +106,11 @@ router.get('/regras_automacao', authMiddleware, checkGlobalRole(['master']), asy
 router.post('/regras_automacao', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { nome_regra, setor_origem_id, status_gatilho_id, acoes } = req.body; const usuarioId = req.usuarioId; if (!nome_regra || !setor_origem_id || !status_gatilho_id || !Array.isArray(acoes) || acoes.length === 0) { return res.status(400).json({ error: 'Dados da regra inválidos ou faltando.' }); } let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const regraSql = 'INSERT INTO regras_automacao (nome_regra, setor_origem_id, status_gatilho_id, usuario_criador_id) VALUES (?, ?, ?, ?)'; const [regraResult] = await connection.query(regraSql, [nome_regra, setor_origem_id, status_gatilho_id, usuarioId]); const novaRegraId = regraResult.insertId; for (const acao of acoes) { if (!acao.setor_destino_id) { throw new Error('Ação inválida: setor de destino é obrigatório.'); } const acaoSql = 'INSERT INTO acoes_automacao (regra_id, setor_destino_id, template_descricao, status_retorno_sucesso_id, status_retorno_falha_id) VALUES (?, ?, ?, ?, ?)'; await connection.query(acaoSql, [novaRegraId, acao.setor_destino_id, acao.template_descricao || '', acao.status_retorno_sucesso_id || null, acao.status_retorno_falha_id || null]); } await connection.commit(); res.status(201).json({ message: 'Regra de automação e suas ações foram criadas com sucesso!', id: novaRegraId }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao criar regra de automação:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.delete('/regras_automacao/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: regraId } = req.params; try { const [result] = await pool.query('DELETE FROM regras_automacao WHERE id = ? AND usuario_criador_id = ?', [regraId, req.usuarioId]); if (result.affectedRows === 0) { return res.status(404).json({ error: 'Regra de automação não encontrada ou não pertence a você.' }); } res.status(200).json({ message: 'Regra de automação deletada com sucesso.' }); } catch (error) { console.error("Erro ao deletar regra de automação:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
-module.exports = router;
+module.exports = router;*/
 
 
 
-/*
+
 const express = require('express');
 const router = express.Router();
 const pool = require('./config/database');
@@ -214,7 +214,7 @@ router.get('/regras_automacao', authMiddleware, checkGlobalRole(['master']), asy
 router.post('/regras_automacao', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { nome_regra, setor_origem_id, status_gatilho_id, acoes } = req.body; const usuarioId = req.usuarioId; if (!nome_regra || !setor_origem_id || !status_gatilho_id || !Array.isArray(acoes) || acoes.length === 0) { return res.status(400).json({ error: 'Dados da regra inválidos ou faltando.' }); } let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const regraSql = 'INSERT INTO regras_automacao (nome_regra, setor_origem_id, status_gatilho_id, usuario_criador_id) VALUES (?, ?, ?, ?)'; const [regraResult] = await connection.query(regraSql, [nome_regra, setor_origem_id, status_gatilho_id, usuarioId]); const novaRegraId = regraResult.insertId; for (const acao of acoes) { if (!acao.setor_destino_id) { throw new Error('Ação inválida: setor de destino é obrigatório.'); } const acaoSql = 'INSERT INTO acoes_automacao (regra_id, setor_destino_id, template_descricao, status_retorno_sucesso_id, status_retorno_falha_id) VALUES (?, ?, ?, ?, ?)'; await connection.query(acaoSql, [novaRegraId, acao.setor_destino_id, acao.template_descricao || '', acao.status_retorno_sucesso_id || null, acao.status_retorno_falha_id || null]); } await connection.commit(); res.status(201).json({ message: 'Regra de automação e suas ações foram criadas com sucesso!', id: novaRegraId }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao criar regra de automação:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.delete('/regras_automacao/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: regraId } = req.params; try { const [result] = await pool.query('DELETE FROM regras_automacao WHERE id = ? AND usuario_criador_id = ?', [regraId, req.usuarioId]); if (result.affectedRows === 0) { return res.status(404).json({ error: 'Regra de automação não encontrada ou não pertence a você.' }); } res.status(200).json({ message: 'Regra de automação deletada com sucesso.' }); } catch (error) { console.error("Erro ao deletar regra de automação:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
-module.exports = router;*/
+module.exports = router;
 
 
 
