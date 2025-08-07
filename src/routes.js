@@ -62,7 +62,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
                 const acaoOrigemSql = `SELECT a.* FROM acoes_automacao a JOIN regras_automacao r ON a.regra_id = r.id WHERE r.setor_origem_id = (SELECT setor_id FROM tarefas WHERE id = ?) AND a.setor_destino_id = ?`;
                 const [acaoOrigemRows] = await connection.query(acaoOrigemSql, [tarefaAtual.tarefa_pai_id, setorAtualId]);
                 if (acaoOrigemRows.length > 0) {
-                    const acao = acoOrigemRows[0];
+                    const acao = acaoOrigemRows[0];
                     let statusDestinoMae = null;
                     if (acao.status_retorno_sucesso_id == updates.status_id) { statusDestinoMae = acao.status_retorno_sucesso_id; }
                     else if (acao.status_retorno_falha_id == updates.status_id) { statusDestinoMae = acao.status_retorno_falha_id; }
