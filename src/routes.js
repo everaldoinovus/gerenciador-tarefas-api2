@@ -1,5 +1,7 @@
 // Arquivo: gerenciador-tarefas-api/src.routes.js
 
+// Arquivo: gerenciador-tarefas-api/src.routes.js
+
 const express = require('express');
 const router = express.Router();
 const pool = require('./config/database');
@@ -22,14 +24,11 @@ router.get('/convites', authMiddleware, async (req, res) => { try { const [userR
 router.post('/convites/:id/aceitar', authMiddleware, async (req, res) => { const { id: conviteId } = req.params; const usuarioId = req.usuarioId; let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [usuarioId]); const [inviteRows] = await pool.query('SELECT * FROM convites WHERE id = ?', [conviteId]); if (inviteRows.length === 0) { await connection.rollback(); return res.status(404).json({ error: 'Convite não encontrado.' }); } const convite = inviteRows[0]; const userEmail = userRows[0].email; if (convite.email_convidado !== userEmail || convite.status !== 'pendente') { await connection.rollback(); return res.status(403).json({ error: 'Este convite não é válido para você.' }); } await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, convite.setor_id, 'membro']); await connection.query("UPDATE convites SET status = 'aceito' WHERE id = ?", [conviteId]); await connection.commit(); res.status(200).json({ message: 'Convite aceito! Você agora é membro do setor.' }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') { return res.status(409).json({ error: 'Você já é membro deste setor.' }); } console.error("Erro ao aceitar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.get('/tarefas', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT t.*, s.nome AS setor_nome, st.nome AS status_nome, u.email AS responsavel_email FROM tarefas t JOIN setores s ON t.setor_id = s.id JOIN status st ON t.status_id = st.id LEFT JOIN usuarios u ON t.responsavel_id = u.id WHERE t.setor_id IN ( SELECT setor_id FROM usuarios_setores WHERE usuario_id = ? ) `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao buscar tarefas (API):", error); res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); } });
 router.post('/tarefas', authMiddleware, async (req, res) => { const { descricao, responsavel_id, setor_id, data_prevista_conclusao } = req.body; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setor_id]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado a este setor.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [statusRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [setor_id]); if (statusRows.length === 0) { await connection.rollback(); return res.status(400).json({ error: 'Este setor não tem nenhum status configurado.' }); } const statusInicialId = statusRows[0].id; const tarefaSql = `INSERT INTO tarefas (descricao, responsavel_id, setor_id, status_id, data_prevista_conclusao) VALUES (?, ?, ?, ?, ?);`; const values = [descricao, responsavel_id || null, setor_id, statusInicialId, data_prevista_conclusao]; const [result] = await connection.query(tarefaSql, values); const novaTarefaId = result.insertId; const historySql = 'INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)'; await connection.query(historySql, [novaTarefaId, null, statusInicialId, usuarioId]); await connection.commit(); res.status(201).json({ message: 'Tarefa criada!', id: novaTarefaId }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao criar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } } catch (permError) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } });
-
 router.put('/tarefas/:id', authMiddleware, async (req, res) => {
     const { id: tarefaId } = req.params;
     const updates = req.body;
     const usuarioId = req.usuarioId;
-    console.log(`\n[LOG PUT /tarefas/${tarefaId}] 1. Recebida requisição.`);
-    console.log(`[LOG PUT] Usuário ID: ${usuarioId}`);
-    console.log(`[LOG PUT] Dados recebidos:`, updates);
+    console.log(`\n[LOG PUT /tarefas/${tarefaId}] 1. Recebida requisição com dados:`, updates);
     let connection;
     try {
         connection = await pool.getConnection();
@@ -42,7 +41,6 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
         console.log(`[LOG PUT] 2. Tarefa atual encontrada. Pai ID: ${tarefaAtual.tarefa_pai_id}, Setor ID: ${setorAtualId}, Status ID: ${statusAtualId}`);
         const [permRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorAtualId]);
         if (permRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado para editar tarefas neste setor.' }); }
-        if (updates.setor_id && updates.setor_id !== setorAtualId) { const [destPermRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, updates.setor_id]); if (destPermRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado ao setor de destino.' }); } }
         const colunasPermitidas = ['descricao', 'responsavel_id', 'setor_id', 'status_id', 'data_prevista_conclusao', 'data_finalizacao', 'notas'];
         const fieldsToUpdate = Object.keys(updates).filter(key => colunasPermitidas.includes(key));
         if (fieldsToUpdate.length > 0) {
@@ -51,12 +49,12 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
             values.push(tarefaId);
             await connection.query(`UPDATE tarefas SET ${setClause} WHERE id = ?`, values);
         }
-        if (updates.status_id && updates.status_id !== statusAtualId) {
+        if (updates.status_id && updates.status_id != statusAtualId) {
             console.log(`[LOG PUT] 3. Detectada mudança de status de ${statusAtualId} para ${updates.status_id}.`);
             await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaId, statusAtualId, updates.status_id, usuarioId]);
             if (tarefaAtual.tarefa_pai_id) {
-                console.log(`[LOG RETORNO] 4. Esta é uma tarefa filha. ID da mãe: ${tarefaAtual.tarefa_pai_id}. Buscando regras de retorno...`);
-                const acaoOrigemSql = ` SELECT a.* FROM acoes_automacao a JOIN regras_automacao r ON a.regra_id = r.id JOIN tarefas t_pai ON r.setor_origem_id = t_pai.setor_id WHERE t_pai.id = ? AND a.setor_destino_id = ? `;
+                console.log(`[LOG RETORNO] 4. Esta é uma tarefa filha. ID da mãe: ${tarefaAtual.tarefa_pai_id}.`);
+                const acaoOrigemSql = `SELECT a.* FROM acoes_automacao a JOIN regras_automacao r ON a.regra_id = r.id WHERE r.setor_origem_id = (SELECT setor_id FROM tarefas WHERE id = ?) AND a.setor_destino_id = ?`;
                 const [acaoOrigemRows] = await connection.query(acaoOrigemSql, [tarefaAtual.tarefa_pai_id, setorAtualId]);
                 console.log(`[LOG RETORNO] 5. Encontradas ${acaoOrigemRows.length} ações de origem possíveis.`);
                 if (acaoOrigemRows.length > 0) {
@@ -66,19 +64,33 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
                     if (acao.status_retorno_sucesso_id == updates.status_id) { statusDestinoMae = acao.status_retorno_sucesso_id; console.log(`[LOG RETORNO] 7. Gatilho de SUCESSO ativado.`); }
                     else if (acao.status_retorno_falha_id == updates.status_id) { statusDestinoMae = acao.status_retorno_falha_id; console.log(`[LOG RETORNO] 7. Gatilho de FALHA ativado.`); }
                     if (statusDestinoMae) {
-                        console.log(`[LOG RETORNO] 8. Executando UPDATE na tarefa mãe ${tarefaAtual.tarefa_pai_id} para o status ${statusDestinoMae}...`);
                         const [tarefaMaeAtualRows] = await connection.query('SELECT status_id FROM tarefas WHERE id = ?', [tarefaAtual.tarefa_pai_id]);
                         if(tarefaMaeAtualRows.length > 0) {
                             const tarefaMaeStatusAtual = tarefaMaeAtualRows[0].status_id;
-                            await connection.query("UPDATE tarefas SET status_id = ?, substatus_processo = NULL WHERE id = ?", [statusDestinoMae, tarefaAtual.tarefa_pai_id]);
+                            console.log(`[LOG RETORNO] 8. Movendo tarefa mãe ${tarefaAtual.tarefa_pai_id} para o status ${statusDestinoMae}.`);
+                            await connection.query("UPDATE tarefas SET status_id = ? WHERE id = ?", [statusDestinoMae, tarefaAtual.tarefa_pai_id]);
                             await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaAtual.tarefa_pai_id, tarefaMaeStatusAtual, statusDestinoMae, usuarioId]);
-                            console.log(`[LOG RETORNO] 9. UPDATE da tarefa mãe executado com sucesso.`);
                         }
                     } else { console.log(`[LOG RETORNO] 7. O novo status ${updates.status_id} não corresponde a nenhum gatilho de retorno.`); }
                 }
             }
             const [regras] = await connection.query('SELECT * FROM regras_automacao WHERE setor_origem_id = ? AND status_gatilho_id = ?', [setorAtualId, updates.status_id]);
-            if (regras.length > 0) { await connection.query("UPDATE tarefas SET substatus_processo = 'aguardando_dependencia' WHERE id = ?", [tarefaId]); for (const regra of regras) { const [acoes] = await connection.query('SELECT * FROM acoes_automacao WHERE regra_id = ?', [regra.id]); for (const acao of acoes) { let novaDescricao = acao.template_descricao || `Gerado por: ${tarefaAtual.descricao}`; novaDescricao = novaDescricao.replace(/{descricao_original}/g, tarefaAtual.descricao).replace(/{id_original}/g, tarefaAtual.id); const [statusDestinoRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [acao.setor_destino_id]); if (statusDestinoRows.length > 0) { const statusInicialDestinoId = statusDestinoRows[0].id; const [novaTarefaResult] = await connection.query(`INSERT INTO tarefas (descricao, setor_id, status_id, tarefa_pai_id) VALUES (?, ?, ?, ?);`, [novaDescricao, acao.setor_destino_id, statusInicialDestinoId, tarefaAtual.id]); const novaTarefaId = novaTarefaResult.insertId; await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?)', [novaTarefaId, statusInicialDestinoId, usuarioId]); } } } }
+            if (regras.length > 0) {
+                console.log(`[LOG IDA] Gatilho de IDA ativado para ${regras.length} regra(s).`);
+                for (const regra of regras) {
+                    const [acoes] = await connection.query('SELECT * FROM acoes_automacao WHERE regra_id = ?', [regra.id]);
+                    for (const acao of acoes) {
+                        let novaDescricao = acao.template_descricao || `Gerado por: ${tarefaAtual.descricao}`;
+                        novaDescricao = novaDescricao.replace(/{descricao_original}/g, tarefaAtual.descricao).replace(/{id_original}/g, tarefaAtual.id);
+                        const [statusDestinoRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [acao.setor_destino_id]);
+                        if (statusDestinoRows.length > 0) {
+                            const statusInicialDestinoId = statusDestinoRows[0].id;
+                            const [novaTarefaResult] = await connection.query(`INSERT INTO tarefas (descricao, setor_id, status_id, tarefa_pai_id) VALUES (?, ?, ?, ?);`, [novaDescricao, acao.setor_destino_id, statusInicialDestinoId, tarefaAtual.id]);
+                            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?)', [novaTarefaResult.insertId, statusInicialDestinoId, usuarioId]);
+                        }
+                    }
+                }
+            }
         }
         await connection.commit();
         res.status(200).json({ message: 'Tarefa atualizada!' });
