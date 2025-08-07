@@ -32,68 +32,37 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
         connection = await pool.getConnection();
         await connection.beginTransaction();
         
-        // CORRIGIDO: String em uma única linha
         const [taskRows] = await connection.query('SELECT * FROM tarefas WHERE id = ?', [tarefaId]);
-        
-        if (taskRows.length === 0) { 
-			await connection.rollback(); 
-			return res.status(404).json({ error: 'Tarefa não encontrada.' }); 
+        if (taskRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'Tarefa não encontrada.' });
         }
+        
         const tarefaAtual = taskRows[0];
-		
-        // ---- INÍCIO DOS CONSOLES DE DEBUG ----
-        console.log(`\n--- DEBUG INICIADO PARA TAREFA ID: ${tarefaId} ---`);
-        console.log('1. Corpo da Requisição (updates):', updates);
-        console.log('2. Dados da Tarefa Atual no Banco:', tarefaAtual);
-        // ---- FIM DOS CONSOLES DE DEBUG ----
-		
         const setorAtualId = tarefaAtual.setor_id;
 
-        // CORRIGIDO: String em uma única linha
+        // Validações de permissão (sem alteração)
         const [permRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorAtualId]);
-        
-        if (permRows.length === 0) { 
-			await connection.rollback(); 
-            // CORRIGIDO: String em uma única linha
-			return res.status(403).json({ error: 'Acesso negado para editar tarefas neste setor.' }); 
-		}
+        if (permRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado para editar tarefas neste setor.' }); }
+        if (updates.setor_id && updates.setor_id !== setorAtualId) {
+            const [destPermRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, updates.setor_id]);
+            if (destPermRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado ao setor de destino.' }); }
+        }
 
-        if (updates.setor_id && updates.setor_id !== setorAtualId) { 
-            // CORRIGIDO: String em uma única linha
-			const [destPermRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, updates.setor_id]); 
-			if (destPermRows.length === 0) { 
-				await connection.rollback(); 
-                // CORRIGIDO: String em uma única linha
-				return res.status(403).json({ error: 'Acesso negado ao setor de destino.' }); 
-			} 
-		}
         const statusAtualId = tarefaAtual.status_id;
-		
+
+        // Lógica para LIGAR o feedback (sem alteração)
         if (tarefaAtual.tarefa_pai_id && updates.status_id && updates.status_id !== statusAtualId) {
-            console.log('3. CONDIÇÃO 1/2 PASSOU: A tarefa tem pai e o status está mudando.');
-			
-			const [statusInicialRows] = await connection.query(
-                'SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1',
-                [tarefaAtual.setor_id]
-            );
+            const [statusInicialRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [tarefaAtual.setor_id]);
             if (statusInicialRows.length > 0) {
                 const statusInicialId = statusInicialRows[0].id;
-				console.log(`4. Verificação Final: Status Atual ID = ${statusAtualId} | Status Inicial do Setor ID = ${statusInicialId}`);
-				
                 if (statusAtualId === statusInicialId) {
-                    console.log('5. CONDIÇÃO 2/2 PASSOU! ATUALIZANDO TAREFA-PAI...');
-					await connection.query(
-                        "UPDATE tarefas SET status_vinculado = 'em_andamento' WHERE id = ?",
-                        [tarefaAtual.tarefa_pai_id]
-                    );
-                } else {
-					console.log('5. FALHA NA VERIFICAÇÃO FINAL: A tarefa não está sendo movida do status inicial. Nenhuma ação no pai.');
-				}
+                    await connection.query("UPDATE tarefas SET status_vinculado = 'em_andamento' WHERE id = ?", [tarefaAtual.tarefa_pai_id]);
+                }
             }
-        } else {
-			console.log('3. CONDIÇÃO 1/2 FALHOU: Ou a tarefa não tem pai, ou o status_id não foi enviado, ou o status não mudou.');
         }
-		
+
+        // Lógica de atualização geral (sem alteração)
         const colunasPermitidas = ['descricao', 'responsavel_id', 'setor_id', 'status_id', 'data_prevista_conclusao', 'data_finalizacao', 'notas'];
         const fieldsToUpdate = Object.keys(updates).filter(key => colunasPermitidas.includes(key));
         if (fieldsToUpdate.length > 0) {
@@ -103,8 +72,12 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
             const updateSql = `UPDATE tarefas SET ${setClause} WHERE id = ?`;
             await connection.query(updateSql, values);
         }
+
+        // Lógica de histórico e automação (COM A ALTERAÇÃO PRINCIPAL)
         if (updates.status_id && updates.status_id !== statusAtualId) {
             await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaId, statusAtualId, updates.status_id, usuarioId]);
+            
+            // Lógica para DESLIGAR o feedback
             if (tarefaAtual.tarefa_pai_id) {
                 const [statusInfo] = await connection.query('SELECT nome FROM status WHERE id = ?', [updates.status_id]);
                 if (statusInfo.length > 0) {
@@ -114,20 +87,31 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
                         let statusDestinoMae = null;
                         if (nomeStatusNovo.includes('aprovado') && acao.status_retorno_sucesso_id) { statusDestinoMae = acao.status_retorno_sucesso_id; }
                         else if (nomeStatusNovo.includes('negado') && acao.status_retorno_falha_id) { statusDestinoMae = acao.status_retorno_falha_id; }
+                        
                         if (statusDestinoMae) {
                             const [tarefaMaeAtualRows] = await connection.query('SELECT status_id FROM tarefas WHERE id = ?', [tarefaAtual.tarefa_pai_id]);
-                            if(tarefaMaeAtualRows.length > 0) {
+                            if (tarefaMaeAtualRows.length > 0) {
                                 const tarefaMaeStatusAtual = tarefaMaeAtualRows[0].status_id;
-                                await connection.query('UPDATE tarefas SET status_id = ? WHERE id = ?', [statusDestinoMae, tarefaAtual.tarefa_pai_id]);
+                                
+                                // ===== ALTERAÇÃO PRINCIPAL AQUI =====
+                                // Atualiza o status da tarefa-mãe E reseta o feedback visual
+                                await connection.query(
+                                    "UPDATE tarefas SET status_id = ?, status_vinculado = 'aguardando' WHERE id = ?", 
+                                    [statusDestinoMae, tarefaAtual.tarefa_pai_id]
+                                );
+                                // ======================================
+
                                 await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaAtual.tarefa_pai_id, tarefaMaeStatusAtual, statusDestinoMae, usuarioId]);
                             }
                         }
                     }
                 }
             }
+            
+            // Lógica de criação de novas tarefas (sem alteração)
             const [regras] = await connection.query('SELECT * FROM regras_automacao WHERE setor_origem_id = ? AND status_gatilho_id = ?', [setorAtualId, updates.status_id]);
             if (regras.length > 0) {
-                for (const regra of regras) {
+                 for (const regra of regras) {
                     const [acoes] = await connection.query('SELECT * FROM acoes_automacao WHERE regra_id = ?', [regra.id]);
                     for (const acao of acoes) {
                         let novaDescricao = acao.template_descricao || `Gerado por: ${tarefaAtual.descricao}`;
@@ -143,6 +127,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
                 }
             }
         }
+        
         await connection.commit();
         res.status(200).json({ message: 'Tarefa atualizada!' });
     } catch (error) {
@@ -162,8 +147,6 @@ router.post('/regras_automacao', authMiddleware, checkGlobalRole(['master']), as
 router.delete('/regras_automacao/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: regraId } = req.params; try { const [result] = await pool.query('DELETE FROM regras_automacao WHERE id = ? AND usuario_criador_id = ?', [regraId, req.usuarioId]); if (result.affectedRows === 0) { return res.status(404).json({ error: 'Regra de automação não encontrada ou não pertence a você.' }); } res.status(200).json({ message: 'Regra de automação deletada com sucesso.' }); } catch (error) { console.error("Erro ao deletar regra de automação:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
 module.exports = router;
-
-
 
 
 
