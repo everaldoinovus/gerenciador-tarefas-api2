@@ -27,6 +27,9 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
     const { id: tarefaId } = req.params;
     const updates = req.body;
     const usuarioId = req.usuarioId;
+    console.log(`\n[LOG PUT /tarefas/${tarefaId}] 1. Recebida requisição.`);
+    console.log(`[LOG PUT] Usuário ID: ${usuarioId}`);
+    console.log(`[LOG PUT] Dados recebidos:`, updates);
     let connection;
     try {
         connection = await pool.getConnection();
@@ -36,6 +39,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
         const tarefaAtual = taskRows[0];
         const setorAtualId = tarefaAtual.setor_id;
         const statusAtualId = tarefaAtual.status_id;
+        console.log(`[LOG PUT] 2. Tarefa atual encontrada. Pai ID: ${tarefaAtual.tarefa_pai_id}, Setor ID: ${setorAtualId}, Status ID: ${statusAtualId}`);
         const [permRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorAtualId]);
         if (permRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado para editar tarefas neste setor.' }); }
         if (updates.setor_id && updates.setor_id !== setorAtualId) { const [destPermRows] = await connection.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, updates.setor_id]); if (destPermRows.length === 0) { await connection.rollback(); return res.status(403).json({ error: 'Acesso negado ao setor de destino.' }); } }
@@ -48,23 +52,28 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
             await connection.query(`UPDATE tarefas SET ${setClause} WHERE id = ?`, values);
         }
         if (updates.status_id && updates.status_id !== statusAtualId) {
+            console.log(`[LOG PUT] 3. Detectada mudança de status de ${statusAtualId} para ${updates.status_id}.`);
             await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaId, statusAtualId, updates.status_id, usuarioId]);
             if (tarefaAtual.tarefa_pai_id) {
+                console.log(`[LOG RETORNO] 4. Esta é uma tarefa filha. ID da mãe: ${tarefaAtual.tarefa_pai_id}. Buscando regras de retorno...`);
                 const acaoOrigemSql = `SELECT a.* FROM acoes_automacao a JOIN regras_automacao r ON a.regra_id = r.id WHERE r.setor_origem_id = (SELECT setor_id FROM tarefas WHERE id = ?) AND a.setor_destino_id = ?`;
                 const [acaoOrigemRows] = await connection.query(acaoOrigemSql, [tarefaAtual.tarefa_pai_id, setorAtualId]);
+                console.log(`[LOG RETORNO] 5. Encontradas ${acaoOrigemRows.length} ações de origem possíveis.`);
                 if (acaoOrigemRows.length > 0) {
                     const acao = acaoOrigemRows[0];
+                    console.log(`[LOG RETORNO] 6. Analisando Ação ID ${acao.id}. Sucesso: ${acao.status_retorno_sucesso_id}, Falha: ${acao.status_retorno_falha_id}`);
                     let statusDestinoMae = null;
-                    if (acao.status_retorno_sucesso_id === updates.status_id) { statusDestinoMae = acao.status_retorno_sucesso_id; }
-                    else if (acao.status_retorno_falha_id === updates.status_id) { statusDestinoMae = acao.status_retorno_falha_id; }
+                    if (acao.status_retorno_sucesso_id === updates.status_id) { statusDestinoMae = acao.status_retorno_sucesso_id; console.log(`[LOG RETORNO] 7. Gatilho de SUCESSO ativado.`); }
+                    else if (acao.status_retorno_falha_id === updates.status_id) { statusDestinoMae = acao.status_retorno_falha_id; console.log(`[LOG RETORNO] 7. Gatilho de FALHA ativado.`); }
                     if (statusDestinoMae) {
+                        console.log(`[LOG RETORNO] 8. Executando UPDATE na tarefa mãe ${tarefaAtual.tarefa_pai_id} para o status ${statusDestinoMae}...`);
                         const [tarefaMaeAtualRows] = await connection.query('SELECT status_id FROM tarefas WHERE id = ?', [tarefaAtual.tarefa_pai_id]);
                         if(tarefaMaeAtualRows.length > 0) {
-                            const tarefaMaeStatusAtual = tarefaMaeAtualRows[0].status_id;
                             await connection.query("UPDATE tarefas SET status_id = ?, substatus_processo = NULL WHERE id = ?", [statusDestinoMae, tarefaAtual.tarefa_pai_id]);
-                            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaAtual.tarefa_pai_id, tarefaMaeStatusAtual, statusDestinoMae, usuarioId]);
+                            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaAtual.tarefa_pai_id, tarefaMaeAtualRows[0].status_id, statusDestinoMae, usuarioId]);
+                            console.log(`[LOG RETORNO] 9. UPDATE da tarefa mãe executado com sucesso.`);
                         }
-                    }
+                    } else { console.log(`[LOG RETORNO] 7. O novo status ${updates.status_id} não corresponde a nenhum gatilho de retorno.`); }
                 }
             }
             const [regras] = await connection.query('SELECT * FROM regras_automacao WHERE setor_origem_id = ? AND status_gatilho_id = ?', [setorAtualId, updates.status_id]);
@@ -74,7 +83,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
         res.status(200).json({ message: 'Tarefa atualizada!' });
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("Erro ao atualizar tarefa:", error);
+        console.error("[LOG PUT] ERRO FATAL:", error);
         res.status(500).json({ error: 'Erro interno do servidor.' });
     } finally {
         if (connection) connection.release();
