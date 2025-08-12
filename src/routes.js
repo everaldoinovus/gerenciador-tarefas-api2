@@ -11,7 +11,73 @@ router.get('/setores', authMiddleware, async (req, res) => { const usuarioId = r
 router.get('/setores/:id/status', authMiddleware, async (req, res) => { const { id: setorId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado a este setor.' }); const [statusRows] = await pool.query('SELECT * FROM status WHERE setor_id = ? ORDER BY ordem ASC', [setorId]); res.status(200).json(statusRows); } catch (error) { console.error("Erro ao listar status do setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.post('/setores/:id/convidar', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; const { email: emailConvidado } = req.body; const usuarioConvidouId = req.usuarioId; if (!emailConvidado) return res.status(400).json({ error: 'O e-mail do convidado é obrigatório.' }); try { const [userRows] = await pool.query('SELECT id FROM usuarios WHERE email = ?', [emailConvidado]); if (userRows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' }); const usuarioConvidadoId = userRows[0].id; const [memberRows] = await pool.query('SELECT id FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioConvidadoId, setorId]); if (memberRows.length > 0) return res.status(409).json({ error: 'Este usuário já é membro do setor.' }); await pool.query('INSERT INTO convites (setor_id, email_convidado, usuario_convidou_id) VALUES (?, ?, ?)', [setorId, emailConvidado, usuarioConvidouId]); res.status(201).json({ message: `Convite enviado para ${emailConvidado} com sucesso.` }); } catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Um convite para este usuário já está pendente.' }); console.error("Erro ao criar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.get('/setores/:id/membros', authMiddleware, async (req, res) => { const { id: setorId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado. Você não tem permissão para ver os membros deste setor.' }); const sql = ` SELECT u.id, u.email, us.funcao FROM usuarios u JOIN usuarios_setores us ON u.id = us.usuario_id WHERE us.setor_id = ? ORDER BY u.email`; const [members] = await pool.query(sql, [setorId]); res.status(200).json(members); } catch (error) { console.error("Erro ao listar membros do setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
-router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; try { await pool.query('DELETE FROM setores WHERE id = ?', [setorId]); res.status(200).json({ message: 'Setor e todas as suas tarefas foram deletados!' }); } catch (error) { res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' }); } });
+/*router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; try { await pool.query('DELETE FROM setores WHERE id = ?', [setorId]); res.status(200).json({ message: 'Setor e todas as suas tarefas foram deletados!' }); } catch (error) { res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' }); } });*/
+// SUBSTITUA A SUA ROTINA DE DELETE POR ESTA VERSÃO CORRIGIDA E COMPLETA
+
+router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => {
+    const { id: setorId } = req.params;
+    let connection; // Declaramos a conexão aqui para que seja acessível nos blocos try, catch e finally
+
+    try {
+        // 1. Obtém uma conexão do pool para poder usar transações
+        connection = await pool.getConnection();
+        
+        // 2. Inicia a transação
+        await connection.beginTransaction();
+
+        // 3. Deleta os registros "netos" e "filhos" primeiro, na ordem correta, para evitar erros.
+        // Usamos 'connection.query' em vez de 'pool.query' para garantir que tudo aconteça na mesma transação.
+        
+        // Deleta o histórico das tarefas que pertencem ao setor
+        await connection.query(
+            'DELETE FROM historico_status_tarefas WHERE tarefa_id IN (SELECT id FROM tarefas WHERE setor_id = ?)',
+            [setorId]
+        );
+        
+        // Deleta as tarefas do setor
+        await connection.query('DELETE FROM tarefas WHERE setor_id = ?', [setorId]);
+        
+        // Deleta os status (colunas) do setor
+        await connection.query('DELETE FROM status WHERE setor_id = ?', [setorId]);
+        
+        // Deleta os convites pendentes para o setor
+        await connection.query('DELETE FROM convites WHERE setor_id = ?', [setorId]);
+        
+        // Deleta a associação de usuários com o setor
+        await connection.query('DELETE FROM usuarios_setores WHERE setor_id = ?', [setorId]);
+        
+        // 4. Agora, com todos os "filhos" removidos, podemos deletar o "pai" (o setor em si).
+        const [result] = await connection.query('DELETE FROM setores WHERE id = ?', [setorId]);
+
+        // Verifica se o setor realmente existia. Se não, nenhuma linha foi afetada.
+        if (result.affectedRows === 0) {
+            await connection.rollback(); // Desfaz a transação se o setor não foi encontrado
+            return res.status(404).json({ error: 'Setor não encontrado.' });
+        }
+
+        // 5. Se todas as operações acima foram bem-sucedidas, confirma a transação.
+        await connection.commit();
+
+        res.status(200).json({ message: 'Setor e todos os seus dados foram deletados com sucesso!' });
+
+    } catch (error) {
+        // 6. Se QUALQUER uma das operações acima falhar, o bloco catch é acionado.
+        if (connection) {
+            // Desfaz todas as mudanças feitas dentro desta transação.
+            await connection.rollback();
+        }
+        
+        // Loga o erro real no console do servidor para depuração
+        console.error("Erro ao deletar setor:", error);
+        
+        res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' });
+    } finally {
+        // 7. Independentemente de sucesso ou falha, libera a conexão de volta para o pool.
+        if (connection) {
+            connection.release();
+        }
+    }
+});
 router.post('/setores/:id/status', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: setorId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [maxOrder] = await pool.query('SELECT MAX(ordem) as max_ordem FROM status WHERE setor_id = ?', [setorId]); const novaOrdem = (maxOrder[0].max_ordem || 0) + 1; const [result] = await pool.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [nome, setorId, novaOrdem]); res.status(201).json({ message: 'Status criado!', id: result.insertId, ordem: novaOrdem, nome: nome }); } catch (error) { res.status(500).json({ error: 'Erro ao criar status.' }); } });
 router.put('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [result] = await pool.query('UPDATE status SET nome = ? WHERE id = ?', [nome, statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); res.status(200).json({ message: 'Status atualizado!' }); } catch (error) { res.status(500).json({ error: 'Erro ao atualizar status.' }); } });
 router.delete('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; try { const [result] = await pool.query('DELETE FROM status WHERE id = ?', [statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); res.status(200).json({ message: 'Status deletado!' }); } catch (error) { if (error.code === 'ER_ROW_IS_REFERENCED_2') { return res.status(400).json({ error: 'Não é possível deletar. Mova as tarefas desta coluna antes de excluí-la.' }); } console.error("Erro ao deletar status:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
