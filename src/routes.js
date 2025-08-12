@@ -3,7 +3,59 @@ const router = express.Router();
 const pool = require('./config/database');
 const { authMiddleware, checkGlobalRole } = require('./authMiddleware');
 
-const checkMembership = async (req, res, next) => { let setorId; if (req.body.setor_id) { setorId = req.body.setor_id; } else if (req.params.id) { const resourceId = req.params.id; try { if (req.path.includes('/tarefas/')) { const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]); if (taskRows.length > 0) { setorId = taskRows[0].setor_id; } } else { setorId = resourceId; } } catch (e) { return res.status(500).json({ error: 'Erro interno.' }); } } if (!setorId) return res.status(400).json({ error: 'ID do setor não pôde ser determinado.' }); try { const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]); if (rows.length === 0) return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' }); req.userRole = rows[0].funcao; next(); } catch (error) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } };
+/*const checkMembership = async (req, res, next) => { let setorId; if (req.body.setor_id) { setorId = req.body.setor_id; } else if (req.params.id) { const resourceId = req.params.id; try { if (req.path.includes('/tarefas/')) { const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]); if (taskRows.length > 0) { setorId = taskRows[0].setor_id; } } else { setorId = resourceId; } } catch (e) { return res.status(500).json({ error: 'Erro interno.' }); } } if (!setorId) return res.status(400).json({ error: 'ID do setor não pôde ser determinado.' }); try { const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]); if (rows.length === 0) return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' }); req.userRole = rows[0].funcao; next(); } catch (error) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } };*/
+// SUBSTITUA A SUA FUNÇÃO checkMembership POR ESTA VERSÃO CORRIGIDA
+
+const checkMembership = async (req, res, next) => {
+    let setorId;
+
+    // Tentativa 1: Obter do corpo da requisição (ex: POST /tarefas)
+    if (req.body.setor_id) {
+        setorId = req.body.setor_id;
+    } 
+    // Tentativa 2: Obter dos parâmetros da URL
+    else if (req.params.id) {
+        const resourceId = req.params.id;
+        
+        // Se a rota é para uma tarefa, precisamos encontrar o setor da tarefa
+        if (req.originalUrl.includes('/tarefas/')) {
+            try {
+                const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]);
+                // VERIFICAÇÃO DE SEGURANÇA: Garante que a tarefa foi encontrada antes de tentar acessá-la
+                if (taskRows && taskRows.length > 0) {
+                    setorId = taskRows[0].setor_id;
+                } else {
+                    // Se a tarefa não foi encontrada, não podemos determinar o setor.
+                    // Isso impede o erro "cannot read properties of undefined".
+                    return res.status(404).json({ error: 'Recurso (tarefa) não encontrado.' });
+                }
+            } catch (e) {
+                return res.status(500).json({ error: 'Erro interno ao verificar permissão.' });
+            }
+        } 
+        // Se não for uma tarefa, assumimos que o ID na URL é o ID do setor
+        else {
+            setorId = resourceId;
+        }
+    }
+
+    // Se após todas as tentativas não conseguimos o setorId, retorna erro.
+    if (!setorId) {
+        return res.status(400).json({ error: 'ID do setor não pôde ser determinado para verificação de permissão.' });
+    }
+
+    // Com o setorId em mãos, verifica se o usuário é membro
+    try {
+        const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]);
+        if (rows.length === 0) {
+            return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' });
+        }
+        req.userRole = rows[0].funcao; // Anexa a função do usuário para o próximo middleware (checkOwnership)
+        next();
+    } catch (error) {
+        res.status(500).json({ error: 'Erro no servidor ao verificar permissão.' });
+    }
+};
 const checkOwnership = (req, res, next) => { if (req.userRole !== 'dono' && req.funcaoGlobal !== 'master') { return res.status(403).json({ error: 'Acesso negado: privilégios de dono ou master necessários.' }); } next(); };
 
 router.post('/setores', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { nome } = req.body; const usuarioId = req.usuarioId; if (!nome) return res.status(400).json({ error: 'O nome do setor é obrigatório.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [setorResult] = await connection.query('INSERT INTO setores (nome) VALUES (?)', [nome]); const novoSetorId = setorResult.insertId; await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, novoSetorId, 'dono']); const statusPadrao = [{ nome: 'Pendente', ordem: 1 }, { nome: 'Em Andamento', ordem: 2 }, { nome: 'Concluído', ordem: 3 }]; for (const status of statusPadrao) { await connection.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [status.nome, novoSetorId, status.ordem]); } await connection.commit(); res.status(201).json({ message: 'Setor criado com sucesso!', id: novoSetorId }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Este setor já existe.' }); console.error("Erro ao criar setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
