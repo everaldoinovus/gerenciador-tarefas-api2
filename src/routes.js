@@ -14,67 +14,87 @@ router.get('/setores/:id/membros', authMiddleware, async (req, res) => { const {
 /*router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; try { await pool.query('DELETE FROM setores WHERE id = ?', [setorId]); res.status(200).json({ message: 'Setor e todas as suas tarefas foram deletados!' }); } catch (error) { res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' }); } });*/
 // SUBSTITUA A SUA ROTINA DE DELETE POR ESTA VERSÃO CORRIGIDA E COMPLETA
 
+// SUBSTITUA A ROTA DE DELETE PELA VERSÃO COM DEBUG
+
 router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => {
     const { id: setorId } = req.params;
-    let connection; // Declaramos a conexão aqui para que seja acessível nos blocos try, catch e finally
+    let connection;
+
+    // Log inicial para confirmar que a rota foi chamada
+    console.log(`[DEBUG] Iniciando processo de exclusão para o Setor ID: ${setorId}`);
 
     try {
-        // 1. Obtém uma conexão do pool para poder usar transações
         connection = await pool.getConnection();
+        console.log('[DEBUG] Conexão com o banco de dados obtida.');
         
-        // 2. Inicia a transação
         await connection.beginTransaction();
+        console.log('[DEBUG] Transação iniciada.');
 
-        // 3. Deleta os registros "netos" e "filhos" primeiro, na ordem correta, para evitar erros.
-        // Usamos 'connection.query' em vez de 'pool.query' para garantir que tudo aconteça na mesma transação.
-        
-        // Deleta o histórico das tarefas que pertencem ao setor
+        console.log('[DEBUG] Passo 1: Tentando deletar de historico_status_tarefas...');
         await connection.query(
             'DELETE FROM historico_status_tarefas WHERE tarefa_id IN (SELECT id FROM tarefas WHERE setor_id = ?)',
             [setorId]
         );
-        
-        // Deleta as tarefas do setor
-        await connection.query('DELETE FROM tarefas WHERE setor_id = ?', [setorId]);
-        
-        // Deleta os status (colunas) do setor
-        await connection.query('DELETE FROM status WHERE setor_id = ?', [setorId]);
-        
-        // Deleta os convites pendentes para o setor
-        await connection.query('DELETE FROM convites WHERE setor_id = ?', [setorId]);
-        
-        // Deleta a associação de usuários com o setor
-        await connection.query('DELETE FROM usuarios_setores WHERE setor_id = ?', [setorId]);
-        
-        // 4. Agora, com todos os "filhos" removidos, podemos deletar o "pai" (o setor em si).
-        const [result] = await connection.query('DELETE FROM setores WHERE id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de historico_status_tarefas.');
 
-        // Verifica se o setor realmente existia. Se não, nenhuma linha foi afetada.
+        console.log('[DEBUG] Passo 2: Tentando deletar de tarefas...');
+        await connection.query('DELETE FROM tarefas WHERE setor_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de tarefas.');
+
+        console.log('[DEBUG] Passo 3: Tentando deletar de status...');
+        await connection.query('DELETE FROM status WHERE setor_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de status.');
+
+        console.log('[DEBUG] Passo 4: Tentando deletar de convites...');
+        await connection.query('DELETE FROM convites WHERE setor_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de convites.');
+
+        console.log('[DEBUG] Passo 5: Tentando deletar de usuarios_setores...');
+        await connection.query('DELETE FROM usuarios_setores WHERE setor_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de usuarios_setores.');
+        
+        // ADICIONANDO AS TABELAS QUE SUSPEITAMOS FALTAR
+        console.log('[DEBUG] Passo 6: Tentando deletar de acoes_automacao...');
+        await connection.query('DELETE FROM acoes_automacao WHERE setor_destino_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de acoes_automacao (como destino).');
+        
+        console.log('[DEBUG] Passo 7: Tentando deletar de regras_automacao...');
+        await connection.query('DELETE FROM regras_automacao WHERE setor_origem_id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de regras_automacao (como origem).');
+
+
+        console.log('[DEBUG] Passo Final: Tentando deletar o setor principal da tabela setores...');
+        const [result] = await connection.query('DELETE FROM setores WHERE id = ?', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar da tabela setores.');
+
         if (result.affectedRows === 0) {
-            await connection.rollback(); // Desfaz a transação se o setor não foi encontrado
+            console.log('[DEBUG] Nenhuma linha afetada. Setor não encontrado. Dando rollback...');
+            await connection.rollback();
             return res.status(404).json({ error: 'Setor não encontrado.' });
         }
 
-        // 5. Se todas as operações acima foram bem-sucedidas, confirma a transação.
         await connection.commit();
+        console.log('[DEBUG] Transação confirmada (commit). Exclusão bem-sucedida!');
 
         res.status(200).json({ message: 'Setor e todos os seus dados foram deletados com sucesso!' });
 
     } catch (error) {
-        // 6. Se QUALQUER uma das operações acima falhar, o bloco catch é acionado.
+        // ESTE É O LOG MAIS IMPORTANTE
+        console.error('!!! ERRO CAPTURADO DURANTE A TRANSAÇÃO !!!');
+        console.error('[DEBUG] A operação falhou. Dando rollback...');
+        
         if (connection) {
-            // Desfaz todas as mudanças feitas dentro desta transação.
             await connection.rollback();
         }
-        
-        // Loga o erro real no console do servidor para depuração
-        console.error("Erro ao deletar setor:", error);
+
+        // VAMOS LOGAR O OBJETO DE ERRO COMPLETO
+        console.error('[DEBUG] MENSAGEM DE ERRO DETALHADA:', error);
         
         res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' });
     } finally {
-        // 7. Independentemente de sucesso ou falha, libera a conexão de volta para o pool.
         if (connection) {
             connection.release();
+            console.log('[DEBUG] Conexão com o banco de dados liberada.');
         }
     }
 });
