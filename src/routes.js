@@ -6,57 +6,43 @@ const { authMiddleware, checkGlobalRole } = require('./authMiddleware');
 /*const checkMembership = async (req, res, next) => { let setorId; if (req.body.setor_id) { setorId = req.body.setor_id; } else if (req.params.id) { const resourceId = req.params.id; try { if (req.path.includes('/tarefas/')) { const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]); if (taskRows.length > 0) { setorId = taskRows[0].setor_id; } } else { setorId = resourceId; } } catch (e) { return res.status(500).json({ error: 'Erro interno.' }); } } if (!setorId) return res.status(400).json({ error: 'ID do setor não pôde ser determinado.' }); try { const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]); if (rows.length === 0) return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' }); req.userRole = rows[0].funcao; next(); } catch (error) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } };*/
 // SUBSTITUA A SUA FUNÇÃO checkMembership POR ESTA VERSÃO CORRIGIDA
 
-const checkMembership = async (req, res, next) => {
-    let setorId;
+const checkMembership = async (req, res, next) => { let setorId; if (req.body.setor_id) { setorId = req.body.setor_id; } else if (req.params.id) { const resourceId = req.params.id; try { if (req.path.includes('/tarefas/')) { const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]); if (taskRows.length > 0) { setorId = taskRows[0].setor_id; } } else { setorId = resourceId; } } catch (e) { return res.status(500).json({ error: 'Erro interno.' }); } } if (!setorId) return res.status(400).json({ error: 'ID do setor não pôde ser determinado.' }); try { const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]); if (rows.length === 0) return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' }); req.userRole = rows[0].funcao; next(); } catch (error) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } };
 
-    // Tentativa 1: Obter do corpo da requisição (ex: POST /tarefas)
-    if (req.body.setor_id) {
-        setorId = req.body.setor_id;
-    } 
-    // Tentativa 2: Obter dos parâmetros da URL
-    else if (req.params.id) {
-        const resourceId = req.params.id;
-        
-        // Se a rota é para uma tarefa, precisamos encontrar o setor da tarefa
-        if (req.originalUrl.includes('/tarefas/')) {
-            try {
-                const [taskRows] = await pool.query('SELECT setor_id FROM tarefas WHERE id = ?', [resourceId]);
-                // VERIFICAÇÃO DE SEGURANÇA: Garante que a tarefa foi encontrada antes de tentar acessá-la
-                if (taskRows && taskRows.length > 0) {
-                    setorId = taskRows[0].setor_id;
-                } else {
-                    // Se a tarefa não foi encontrada, não podemos determinar o setor.
-                    // Isso impede o erro "cannot read properties of undefined".
-                    return res.status(404).json({ error: 'Recurso (tarefa) não encontrado.' });
-                }
-            } catch (e) {
-                return res.status(500).json({ error: 'Erro interno ao verificar permissão.' });
-            }
-        } 
-        // Se não for uma tarefa, assumimos que o ID na URL é o ID do setor
-        else {
-            setorId = resourceId;
-        }
+const checkOwnership = (req, res, next) => { if (req.userRole !== 'dono' && req.funcaoGlobal !== 'master') { return res.status(403).json({ error: 'Acesso negado: privilégios de dono ou master necessários.' }); } next(); };
+
+
+// ===== NOVO MIDDLEWARE DE VERIFICAÇÃO DE PERMISSÃO PARA DELETE =====
+const checkSectorOwnershipForDeletion = async (req, res, next) => {
+    const setorId = req.params.id;
+    const usuarioId = req.usuarioId;
+    const funcaoGlobal = req.funcaoGlobal; // Assumindo que o authMiddleware anexa isso
+
+    // Se o usuário for um 'master', ele pode deletar qualquer setor.
+    if (funcaoGlobal === 'master') {
+        return next();
     }
 
-    // Se após todas as tentativas não conseguimos o setorId, retorna erro.
-    if (!setorId) {
-        return res.status(400).json({ error: 'ID do setor não pôde ser determinado para verificação de permissão.' });
-    }
-
-    // Com o setorId em mãos, verifica se o usuário é membro
+    // Se não for master, verifica se ele é 'dono' do setor específico.
     try {
-        const [rows] = await pool.query('SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [req.usuarioId, setorId]);
-        if (rows.length === 0) {
-            return res.status(403).json({ error: 'Acesso negado: você não é membro deste setor.' });
+        const [rows] = await pool.query(
+            'SELECT funcao FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?',
+            [usuarioId, setorId]
+        );
+
+        // Se não encontrou relação ou a função não é 'dono', nega o acesso.
+        if (rows.length === 0 || rows[0].funcao !== 'dono') {
+            return res.status(403).json({ error: 'Acesso negado. Apenas o dono do setor ou um master podem deletar.' });
         }
-        req.userRole = rows[0].funcao; // Anexa a função do usuário para o próximo middleware (checkOwnership)
+
+        // Se passou na verificação, permite continuar.
         next();
     } catch (error) {
-        res.status(500).json({ error: 'Erro no servidor ao verificar permissão.' });
+        console.error("Erro no middleware de verificação de posse do setor:", error);
+        res.status(500).json({ error: 'Erro no servidor ao verificar permissão para deletar setor.' });
     }
 };
-const checkOwnership = (req, res, next) => { if (req.userRole !== 'dono' && req.funcaoGlobal !== 'master') { return res.status(403).json({ error: 'Acesso negado: privilégios de dono ou master necessários.' }); } next(); };
+
+
 
 router.post('/setores', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { nome } = req.body; const usuarioId = req.usuarioId; if (!nome) return res.status(400).json({ error: 'O nome do setor é obrigatório.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [setorResult] = await connection.query('INSERT INTO setores (nome) VALUES (?)', [nome]); const novoSetorId = setorResult.insertId; await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, novoSetorId, 'dono']); const statusPadrao = [{ nome: 'Pendente', ordem: 1 }, { nome: 'Em Andamento', ordem: 2 }, { nome: 'Concluído', ordem: 3 }]; for (const status of statusPadrao) { await connection.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [status.nome, novoSetorId, status.ordem]); } await connection.commit(); res.status(201).json({ message: 'Setor criado com sucesso!', id: novoSetorId }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Este setor já existe.' }); console.error("Erro ao criar setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.get('/setores', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT s.*, us.funcao FROM setores s JOIN usuarios_setores us ON s.id = us.setor_id WHERE us.usuario_id = ? ORDER BY s.nome ASC; `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao listar setores:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
@@ -68,13 +54,11 @@ router.get('/setores/:id/membros', authMiddleware, async (req, res) => { const {
 
 // SUBSTITUA A ROTA DE DELETE PELA VERSÃO COM DEBUG
 
-router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => {
+router.delete('/setores/:id', authMiddleware, checkSectorOwnershipForDeletion, async (req, res) => {
     const { id: setorId } = req.params;
     let connection;
 
-    // Log inicial para confirmar que a rota foi chamada
     console.log(`[DEBUG] Iniciando processo de exclusão para o Setor ID: ${setorId}`);
-
     try {
         connection = await pool.getConnection();
         console.log('[DEBUG] Conexão com o banco de dados obtida.');
@@ -83,10 +67,7 @@ router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, a
         console.log('[DEBUG] Transação iniciada.');
 
         console.log('[DEBUG] Passo 1: Tentando deletar de historico_status_tarefas...');
-        await connection.query(
-            'DELETE FROM historico_status_tarefas WHERE tarefa_id IN (SELECT id FROM tarefas WHERE setor_id = ?)',
-            [setorId]
-        );
+        await connection.query('DELETE FROM historico_status_tarefas WHERE tarefa_id IN (SELECT id FROM tarefas WHERE setor_id = ?)', [setorId]);
         console.log('[DEBUG] Sucesso ao deletar de historico_status_tarefas.');
 
         console.log('[DEBUG] Passo 2: Tentando deletar de tarefas...');
@@ -105,15 +86,14 @@ router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, a
         await connection.query('DELETE FROM usuarios_setores WHERE setor_id = ?', [setorId]);
         console.log('[DEBUG] Sucesso ao deletar de usuarios_setores.');
         
-        // ADICIONANDO AS TABELAS QUE SUSPEITAMOS FALTAR
         console.log('[DEBUG] Passo 6: Tentando deletar de acoes_automacao...');
         await connection.query('DELETE FROM acoes_automacao WHERE setor_destino_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de acoes_automacao (como destino).');
+        await connection.query('DELETE FROM acoes_automacao WHERE regra_id IN (SELECT id FROM regras_automacao WHERE setor_origem_id = ?)', [setorId]);
+        console.log('[DEBUG] Sucesso ao deletar de acoes_automacao.');
         
         console.log('[DEBUG] Passo 7: Tentando deletar de regras_automacao...');
         await connection.query('DELETE FROM regras_automacao WHERE setor_origem_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de regras_automacao (como origem).');
-
+        console.log('[DEBUG] Sucesso ao deletar de regras_automacao.');
 
         console.log('[DEBUG] Passo Final: Tentando deletar o setor principal da tabela setores...');
         const [result] = await connection.query('DELETE FROM setores WHERE id = ?', [setorId]);
@@ -127,21 +107,12 @@ router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, a
 
         await connection.commit();
         console.log('[DEBUG] Transação confirmada (commit). Exclusão bem-sucedida!');
-
         res.status(200).json({ message: 'Setor e todos os seus dados foram deletados com sucesso!' });
-
     } catch (error) {
-        // ESTE É O LOG MAIS IMPORTANTE
         console.error('!!! ERRO CAPTURADO DURANTE A TRANSAÇÃO !!!');
         console.error('[DEBUG] A operação falhou. Dando rollback...');
-        
-        if (connection) {
-            await connection.rollback();
-        }
-
-        // VAMOS LOGAR O OBJETO DE ERRO COMPLETO
+        if (connection) await connection.rollback();
         console.error('[DEBUG] MENSAGEM DE ERRO DETALHADA:', error);
-        
         res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' });
     } finally {
         if (connection) {
