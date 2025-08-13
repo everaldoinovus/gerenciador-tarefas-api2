@@ -97,11 +97,101 @@ router.delete('/setores/:id', authMiddleware, checkSectorOwnershipForDeletion, a
 });
 router.post('/setores/:id/status', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: setorId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [maxOrder] = await pool.query('SELECT MAX(ordem) as max_ordem FROM status WHERE setor_id = ?', [setorId]); const novaOrdem = (maxOrder[0].max_ordem || 0) + 1; const [result] = await pool.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [nome, setorId, novaOrdem]); res.status(201).json({ message: 'Status criado!', id: result.insertId, ordem: novaOrdem, nome: nome }); } catch (error) { res.status(500).json({ error: 'Erro ao criar status.' }); } });
 router.put('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; const { nome } = req.body; if (!nome) return res.status(400).json({ error: 'O nome do status é obrigatório.' }); try { const [result] = await pool.query('UPDATE status SET nome = ? WHERE id = ?', [nome, statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); res.status(200).json({ message: 'Status atualizado!' }); } catch (error) { res.status(500).json({ error: 'Erro ao atualizar status.' }); } });
+
+// ADICIONE ESTA NOVA ROTA AO SEU ARQUIVO DE ROTAS DO BACKEND
+
+router.put('/status/:id/settings', authMiddleware, checkGlobalRole(['master']), async (req, res) => {
+    const { id: statusId } = req.params;
+    const { nome, tempo_maximo_dias } = req.body;
+
+    if (!nome) {
+        return res.status(400).json({ error: 'O nome do status é obrigatório.' });
+    }
+
+    try {
+        // Se tempo_maximo_dias for uma string vazia ou 0, salva como NULL no banco
+        const tempoMaximo = (tempo_maximo_dias && parseInt(tempo_maximo_dias, 10) > 0) 
+            ? parseInt(tempo_maximo_dias, 10) 
+            : null;
+
+        const [result] = await pool.query(
+            'UPDATE status SET nome = ?, tempo_maximo_dias = ? WHERE id = ?',
+            [nome, tempoMaximo, statusId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Status não encontrado.' });
+        }
+        res.status(200).json({ message: 'Status atualizado com sucesso!' });
+    } catch (error) {
+        console.error("Erro ao atualizar configurações do status:", error);
+        res.status(500).json({ error: 'Erro ao atualizar status.' });
+    }
+});
+
 router.delete('/status/:id', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: statusId } = req.params; try { const [result] = await pool.query('DELETE FROM status WHERE id = ?', [statusId]); if (result.affectedRows === 0) return res.status(404).json({ error: 'Status não encontrado.' }); res.status(200).json({ message: 'Status deletado!' }); } catch (error) { if (error.code === 'ER_ROW_IS_REFERENCED_2') { return res.status(400).json({ error: 'Não é possível deletar. Mova as tarefas desta coluna antes de excluí-la.' }); } console.error("Erro ao deletar status:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.put('/setores/:id/status/reorder', authMiddleware, checkGlobalRole(['master']), async (req, res) => { const { id: setorId } = req.params; const { orderedStatuses } = req.body; if (!Array.isArray(orderedStatuses)) { return res.status(400).json({ error: 'Lista de status ordenada é necessária.' }); } let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const updatePromises = orderedStatuses.map((status, index) => { const novaOrdem = index + 1; return connection.query('UPDATE status SET ordem = ? WHERE id = ? AND setor_id = ?', [novaOrdem, status.id, setorId]); }); await Promise.all(updatePromises); await connection.commit(); res.status(200).json({ message: 'Ordem das colunas atualizada!' }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao reordenar status:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
 router.get('/convites', authMiddleware, async (req, res) => { try { const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [req.usuarioId]); if (userRows.length === 0) { return res.status(200).json([]); } const userEmail = userRows[0].email; const sql = ` SELECT c.id AS convite_id, s.id AS setor_id, s.nome AS setor_nome FROM convites c JOIN setores s ON c.setor_id = s.id WHERE c.email_convidado = ? AND c.status = 'pendente' `; const [convites] = await pool.query(sql, [userEmail]); res.status(200).json(convites); } catch (error) { console.error("Erro ao listar convites:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.post('/convites/:id/aceitar', authMiddleware, async (req, res) => { const { id: conviteId } = req.params; const usuarioId = req.usuarioId; let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [userRows] = await pool.query('SELECT email FROM usuarios WHERE id = ?', [usuarioId]); const [inviteRows] = await pool.query('SELECT * FROM convites WHERE id = ?', [conviteId]); if (inviteRows.length === 0) { await connection.rollback(); return res.status(404).json({ error: 'Convite não encontrado.' }); } const convite = inviteRows[0]; const userEmail = userRows[0].email; if (convite.email_convidado !== userEmail || convite.status !== 'pendente') { await connection.rollback(); return res.status(403).json({ error: 'Este convite não é válido para você.' }); } await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, convite.setor_id, 'membro']); await connection.query("UPDATE convites SET status = 'aceito' WHERE id = ?", [conviteId]); await connection.commit(); res.status(200).json({ message: 'Convite aceito! Você agora é membro do setor.' }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') { return res.status(409).json({ error: 'Você já é membro deste setor.' }); } console.error("Erro ao aceitar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
-router.get('/tarefas', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT t.*, s.nome AS setor_nome, st.nome AS status_nome, u.email AS responsavel_email FROM tarefas t JOIN setores s ON t.setor_id = s.id JOIN status st ON t.status_id = st.id LEFT JOIN usuarios u ON t.responsavel_id = u.id WHERE t.setor_id IN ( SELECT setor_id FROM usuarios_setores WHERE usuario_id = ? ) `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao buscar tarefas (API):", error); res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); } });
+//router.get('/tarefas', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT t.*, s.nome AS setor_nome, st.nome AS status_nome, u.email AS responsavel_email FROM tarefas t JOIN setores s ON t.setor_id = s.id JOIN status st ON t.status_id = st.id LEFT JOIN usuarios u ON t.responsavel_id = u.id WHERE t.setor_id IN ( SELECT setor_id FROM usuarios_setores WHERE usuario_id = ? ) `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao buscar tarefas (API):", error); res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' }); } });
+
+// SUBSTITUA A SUA ROTA GET /tarefas POR ESTA VERSÃO APRIMORADA
+
+router.get('/tarefas', authMiddleware, async (req, res) => {
+    const usuarioId = req.usuarioId;
+    try {
+        // Esta query SQL foi aprimorada para fazer o cálculo de atraso
+        const sql = `
+            SELECT 
+                t.*, 
+                s.nome AS setor_nome, 
+                st.nome AS status_nome, 
+                u.email AS responsavel_email,
+                st.tempo_maximo_dias,
+                (
+                    SELECT MAX(h.data_alteracao) 
+                    FROM historico_status_tarefas h 
+                    WHERE h.tarefa_id = t.id AND h.status_novo_id = t.status_id
+                ) AS data_entrada_status_atual
+            FROM 
+                tarefas t 
+            JOIN 
+                setores s ON t.setor_id = s.id 
+            JOIN 
+                status st ON t.status_id = st.id 
+            LEFT JOIN 
+                usuarios u ON t.responsavel_id = u.id 
+            WHERE 
+                t.setor_id IN (SELECT setor_id FROM usuarios_setores WHERE usuario_id = ?)
+        `;
+
+        const [rows] = await pool.query(sql, [usuarioId]);
+
+        // Agora, processamos os resultados no JavaScript para adicionar a flag 'esta_atrasado'
+        const agora = new Date();
+        const tarefasProcessadas = rows.map(tarefa => {
+            let esta_atrasado = false;
+            // Verifica se existe uma regra de tempo E se temos a data de entrada no status
+            if (tarefa.tempo_maximo_dias > 0 && tarefa.data_entrada_status_atual) {
+                const dataEntrada = new Date(tarefa.data_entrada_status_atual);
+                const diffTime = Math.abs(agora - dataEntrada);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                if (diffDays > tarefa.tempo_maximo_dias) {
+                    esta_atrasado = true;
+                }
+            }
+            return { ...tarefa, esta_atrasado };
+        });
+
+        res.status(200).json(tarefasProcessadas);
+
+    } catch (error) {
+        console.error("Erro ao buscar tarefas (API):", error);
+        res.status(500).json({ error: 'Erro interno do servidor ao buscar tarefas.' });
+    }
+});
+
 router.post('/tarefas', authMiddleware, async (req, res) => { const { descricao, responsavel_id, setor_id, data_prevista_conclusao } = req.body; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setor_id]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado a este setor.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [statusRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [setor_id]); if (statusRows.length === 0) { await connection.rollback(); return res.status(400).json({ error: 'Este setor não tem nenhum status configurado.' }); } const statusInicialId = statusRows[0].id; const tarefaSql = `INSERT INTO tarefas (descricao, responsavel_id, setor_id, status_id, data_prevista_conclusao) VALUES (?, ?, ?, ?, ?);`; const values = [descricao, responsavel_id || null, setor_id, statusInicialId, data_prevista_conclusao]; const [result] = await connection.query(tarefaSql, values); const novaTarefaId = result.insertId; const historySql = 'INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)'; await connection.query(historySql, [novaTarefaId, null, statusInicialId, usuarioId]); await connection.commit(); res.status(201).json({ message: 'Tarefa criada!', id: novaTarefaId }); } catch (error) { if (connection) await connection.rollback(); console.error("Erro ao criar tarefa:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } } catch (permError) { res.status(500).json({ error: 'Erro de permissão no servidor.' }); } });
 
 router.put('/tarefas/:id', authMiddleware, async (req, res) => {
