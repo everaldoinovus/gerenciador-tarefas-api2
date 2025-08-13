@@ -50,74 +50,48 @@ router.get('/setores/:id/status', authMiddleware, async (req, res) => { const { 
 router.post('/setores/:id/convidar', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; const { email: emailConvidado } = req.body; const usuarioConvidouId = req.usuarioId; if (!emailConvidado) return res.status(400).json({ error: 'O e-mail do convidado é obrigatório.' }); try { const [userRows] = await pool.query('SELECT id FROM usuarios WHERE email = ?', [emailConvidado]); if (userRows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' }); const usuarioConvidadoId = userRows[0].id; const [memberRows] = await pool.query('SELECT id FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioConvidadoId, setorId]); if (memberRows.length > 0) return res.status(409).json({ error: 'Este usuário já é membro do setor.' }); await pool.query('INSERT INTO convites (setor_id, email_convidado, usuario_convidou_id) VALUES (?, ?, ?)', [setorId, emailConvidado, usuarioConvidouId]); res.status(201).json({ message: `Convite enviado para ${emailConvidado} com sucesso.` }); } catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Um convite para este usuário já está pendente.' }); console.error("Erro ao criar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.get('/setores/:id/membros', authMiddleware, async (req, res) => { const { id: setorId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado. Você não tem permissão para ver os membros deste setor.' }); const sql = ` SELECT u.id, u.email, us.funcao FROM usuarios u JOIN usuarios_setores us ON u.id = us.usuario_id WHERE us.setor_id = ? ORDER BY u.email`; const [members] = await pool.query(sql, [setorId]); res.status(200).json(members); } catch (error) { console.error("Erro ao listar membros do setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 /*router.delete('/setores/:id', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; try { await pool.query('DELETE FROM setores WHERE id = ?', [setorId]); res.status(200).json({ message: 'Setor e todas as suas tarefas foram deletados!' }); } catch (error) { res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' }); } });*/
-// SUBSTITUA A SUA ROTINA DE DELETE POR ESTA VERSÃO CORRIGIDA E COMPLETA
-
-// SUBSTITUA A ROTA DE DELETE PELA VERSÃO COM DEBUG
 
 router.delete('/setores/:id', authMiddleware, checkSectorOwnershipForDeletion, async (req, res) => {
     const { id: setorId } = req.params;
     let connection;
 
-    console.log(`[DEBUG] Iniciando processo de exclusão para o Setor ID: ${setorId}`);
     try {
         connection = await pool.getConnection();
-        console.log('[DEBUG] Conexão com o banco de dados obtida.');
-        
         await connection.beginTransaction();
-        console.log('[DEBUG] Transação iniciada.');
 
-        console.log('[DEBUG] Passo 1: Tentando deletar de historico_status_tarefas...');
+        // Deleta dependências na ordem correta
         await connection.query('DELETE FROM historico_status_tarefas WHERE tarefa_id IN (SELECT id FROM tarefas WHERE setor_id = ?)', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de historico_status_tarefas.');
-
-        console.log('[DEBUG] Passo 2: Tentando deletar de tarefas...');
         await connection.query('DELETE FROM tarefas WHERE setor_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de tarefas.');
-
-        console.log('[DEBUG] Passo 3: Tentando deletar de status...');
         await connection.query('DELETE FROM status WHERE setor_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de status.');
-
-        console.log('[DEBUG] Passo 4: Tentando deletar de convites...');
         await connection.query('DELETE FROM convites WHERE setor_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de convites.');
-
-        console.log('[DEBUG] Passo 5: Tentando deletar de usuarios_setores...');
         await connection.query('DELETE FROM usuarios_setores WHERE setor_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de usuarios_setores.');
-        
-        console.log('[DEBUG] Passo 6: Tentando deletar de acoes_automacao...');
         await connection.query('DELETE FROM acoes_automacao WHERE setor_destino_id = ?', [setorId]);
         await connection.query('DELETE FROM acoes_automacao WHERE regra_id IN (SELECT id FROM regras_automacao WHERE setor_origem_id = ?)', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de acoes_automacao.');
-        
-        console.log('[DEBUG] Passo 7: Tentando deletar de regras_automacao...');
         await connection.query('DELETE FROM regras_automacao WHERE setor_origem_id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar de regras_automacao.');
 
-        console.log('[DEBUG] Passo Final: Tentando deletar o setor principal da tabela setores...');
+        // Deleta o setor principal
         const [result] = await connection.query('DELETE FROM setores WHERE id = ?', [setorId]);
-        console.log('[DEBUG] Sucesso ao deletar da tabela setores.');
 
         if (result.affectedRows === 0) {
-            console.log('[DEBUG] Nenhuma linha afetada. Setor não encontrado. Dando rollback...');
             await connection.rollback();
             return res.status(404).json({ error: 'Setor não encontrado.' });
         }
 
         await connection.commit();
-        console.log('[DEBUG] Transação confirmada (commit). Exclusão bem-sucedida!');
         res.status(200).json({ message: 'Setor e todos os seus dados foram deletados com sucesso!' });
+        
     } catch (error) {
-        console.error('!!! ERRO CAPTURADO DURANTE A TRANSAÇÃO !!!');
-        console.error('[DEBUG] A operação falhou. Dando rollback...');
-        if (connection) await connection.rollback();
-        console.error('[DEBUG] MENSAGEM DE ERRO DETALHADA:', error);
+        if (connection) {
+            await connection.rollback();
+        }
+        
+        // Mantemos o console.error, que é útil para logs de produção
+        console.error("Erro ao deletar setor:", error);
         res.status(500).json({ error: 'Erro interno do servidor ao deletar setor.' });
+
     } finally {
         if (connection) {
             connection.release();
-            console.log('[DEBUG] Conexão com o banco de dados liberada.');
         }
     }
 });
