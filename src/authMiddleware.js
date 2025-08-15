@@ -1,3 +1,59 @@
+// Arquivo: gerenciador-tarefas-api/src/authMiddleware.js - VERSÃO ATUALIZADA
+
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET;
+
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Token não fornecido.' });
+  }
+
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2) {
+    return res.status(401).json({ error: 'Erro no formato do token.' });
+  }
+
+  const [scheme, token] = parts;
+  if (!/^Bearer$/i.test(scheme)) {
+    return res.status(401).json({ error: 'Token mal formatado.' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ error: 'Token inválido ou expirado.' });
+    }
+
+    // ===== MUDANÇA PRINCIPAL AQUI =====
+    // Anexa as informações do usuário à requisição usando o novo formato do token
+    req.usuarioId = decoded.usuarioId;
+    req.role = decoded.role; // Anexa o 'role' (ex: 'admin', 'user') em vez de 'funcaoGlobal'
+
+    return next();
+  });
+};
+
+// ===== MIDDLEWARE DE VERIFICAÇÃO DE PAPEL (ROLE) ATUALIZADO =====
+// Renomeado de checkGlobalRole para checkRole para maior clareza
+const checkRole = (roles) => {
+  return (req, res, next) => {
+    // A verificação agora usa 'req.role'
+    if (!roles.includes(req.role)) {
+      return res.status(403).json({ error: 'Acesso negado: você não tem permissão para esta ação.' });
+    }
+    next();
+  };
+};
+
+// Exporta um objeto com os dois middlewares (o segundo foi renomeado)
+module.exports = {
+  authMiddleware,
+  checkGlobalRole: checkRole, // Mantive o nome 'checkGlobalRole' na exportação para evitar quebrar as importações
+};
+
+
+/*
 // Arquivo: gerenciador-tarefas-api/src/authMiddleware.js
 
 const jwt = require('jsonwebtoken');
@@ -49,4 +105,4 @@ const checkGlobalRole = (roles) => {
 module.exports = {
   authMiddleware,
   checkGlobalRole,
-};
+};*/
