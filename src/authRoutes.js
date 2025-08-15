@@ -1,3 +1,96 @@
+// Arquivo: gerenciador-tarefas-api/src/authRoutes.js - VERSÃO CORRIGIDA
+
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const pool = require('./config/database');
+const { getTransporter, initializeMailer } = require('./config/mailer');
+const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// ===================================================================
+// ROTA DE REGISTRO PÚBLICO REMOVIDA
+// Esta funcionalidade agora é gerenciada pela rota protegida POST /api/users/invite
+// que fica no seu arquivo de rotas principal (ex: routes.js)
+// ===================================================================
+// A rota router.post('/register', ...) foi intencionalmente deletada.
+
+
+// A rota de verificação de e-mail continua a mesma, sem alterações.
+router.post('/verify', async (req, res) => {
+    const { email, codigo } = req.body;
+    if (!email || !codigo) return res.status(400).json({ error: 'Email e código são obrigatórios.' });
+    try {
+        const [rows] = await pool.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' });
+        const usuario = rows[0];
+        if (usuario.verificado_em) return res.status(400).json({ error: 'Esta conta já foi verificada.' });
+        const dataExpiracao = new Date(usuario.codigo_verificacao_expira);
+        if (new Date() > dataExpiracao) return res.status(400).json({ error: 'Código de verificação expirado.' });
+        if (usuario.codigo_verificacao.toUpperCase() !== codigo.toUpperCase()) return res.status(400).json({ error: 'Código de verificação inválido.' });
+        await pool.query('UPDATE usuarios SET verificado_em = ?, codigo_verificacao = NULL, codigo_verificacao_expira = NULL WHERE id = ?', [new Date(), usuario.id]);
+        res.status(200).json({ message: 'Conta verificada com sucesso! Você já pode fazer o login.' });
+    } catch (error) {
+        console.error('Erro na verificação:', error);
+        res.status(500).json({ error: 'Erro interno do servidor.' });
+    }
+});
+
+
+// ===== ROTA DE LOGIN ATUALIZADA =====
+router.post('/login', async (req, res) => {
+  const { email, senha } = req.body;
+  if (!email || !senha) return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
+  try {
+    // 1. A query agora busca também os novos campos 'role' e 'status'.
+    // Note que renomeei senha_hash para corresponder ao seu código.
+    const [rows] = await pool.query('SELECT id, email, senha_hash, verificado_em, role, status FROM usuarios WHERE email = ?', [email]);
+    
+    if (rows.length === 0) return res.status(401).json({ error: 'Credenciais inválidas.' });
+    
+    const usuario = rows[0];
+
+    // 2. Mantém a verificação de e-mail existente.
+    if (!usuario.verificado_em) {
+        return res.status(403).json({ error: 'Sua conta ainda não foi verificada.', needsVerification: true });
+    }
+    
+    // 3. NOVA VERIFICAÇÃO: Checa se o status do usuário é 'ativo'.
+    if (usuario.status !== 'ativo') {
+        return res.status(403).json({ error: 'Sua conta está inativa. Por favor, entre em contato com o administrador.' });
+    }
+
+    const senhaCorreta = await bcrypt.compare(senha, usuario.senha_hash);
+    if (!senhaCorreta) return res.status(401).json({ error: 'Credenciais inválidas.' });
+    
+    // 4. O payload do token agora inclui o ID do usuário e o 'role'.
+    const tokenPayload = {
+      usuarioId: usuario.id,
+      role: usuario.role // Usando o novo campo 'role' do banco de dados
+    };
+
+    const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' }); // Aumentei a expiração para 8h
+    
+    // 5. A resposta agora inclui o token e também o 'role', para que o frontend saiba se o usuário é admin.
+    res.status(200).json({ 
+        token: token, 
+        userInfo: {
+            id: usuario.id,
+            email: usuario.email,
+            role: usuario.role
+        }
+    });
+
+  } catch (error) {
+    console.error('Erro no login:', error);
+    res.status(500).json({ error: 'Erro interno do servidor.' });
+  }
+});
+
+module.exports = router;
+
+/*
 // Arquivo: gerenciador-tarefas-api/src/authRoutes.js
 
 const express = require('express');
@@ -79,4 +172,4 @@ router.post('/login', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = router;*/
