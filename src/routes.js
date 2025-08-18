@@ -68,6 +68,56 @@ router.put('/users/:id/role', authMiddleware, checkGlobalRole(['admin']), async 
 router.put('/users/:id/status', authMiddleware, checkGlobalRole(['admin']), async (req, res) => { const { id: userId } = req.params; const { status } = req.body; if (!['ativo', 'inativo'].includes(status)) { return res.status(400).json({ error: 'Status inválido. Use "ativo" ou "inativo".' }); } try { const [result] = await pool.query('UPDATE usuarios SET status = ? WHERE id = ?', [status, userId]); if (result.affectedRows === 0) { return res.status(404).json({ error: 'Usuário não encontrado.' }); } res.status(200).json({ message: 'Status do usuário atualizado com sucesso.' }); } catch (error) { console.error("Erro ao atualizar status do usuário:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.delete('/users/:id', authMiddleware, checkGlobalRole(['admin']), async (req, res) => { const { id: userId } = req.params; try { const [result] = await pool.query('DELETE FROM usuarios WHERE id = ?', [userId]); if (result.affectedRows === 0) { return res.status(404).json({ error: 'Usuário não encontrado.' }); } res.status(200).json({ message: 'Usuário deletado com sucesso.' }); } catch (error) { if (error.code === 'ER_ROW_IS_REFERENCED_2') { return res.status(400).json({ error: 'Não é possível deletar este usuário pois ele possui dados associados (setores, tarefas, etc.). Considere desativá-lo.' }); } console.error("Erro ao deletar usuário:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 
+router.put('/users/change-password', authMiddleware, async (req, res) => {
+    const { senhaAtual, novaSenha } = req.body;
+    const usuarioId = req.usuarioId; // Obtido do token pelo authMiddleware
+
+    if (!senhaAtual || !novaSenha) {
+        return res.status(400).json({ error: 'A senha atual e a nova senha são obrigatórias.' });
+    }
+
+    if (novaSenha.length < 4) { // Você pode aumentar este requisito
+        return res.status(400).json({ error: 'A nova senha deve ter pelo menos 4 caracteres.' });
+    }
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+
+        // 1. Busca o usuário e sua senha hash atual no banco
+        const [rows] = await connection.query('SELECT senha_hash FROM usuarios WHERE id = ?', [usuarioId]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Usuário não encontrado.' });
+        }
+        
+        const usuario = rows[0];
+
+        // 2. Compara a senha atual fornecida com a senha hash armazenada
+        const senhaCorreta = await bcrypt.compare(senhaAtual, usuario.senha_hash);
+        if (!senhaCorreta) {
+            return res.status(401).json({ error: 'A senha atual está incorreta.' });
+        }
+
+        // 3. Se a senha atual estiver correta, gera o hash da nova senha
+        const novaSenhaHash = await bcrypt.hash(novaSenha, 10);
+
+        // 4. Atualiza a senha no banco de dados
+        await connection.query('UPDATE usuarios SET senha_hash = ? WHERE id = ?', [novaSenhaHash, usuarioId]);
+
+        res.status(200).json({ message: 'Senha alterada com sucesso!' });
+
+    } catch (error) {
+        console.error("Erro ao alterar senha:", error);
+        res.status(500).json({ error: 'Erro interno do servidor ao alterar a senha.' });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
+    }
+});
+
+
 module.exports = router;
 
 
