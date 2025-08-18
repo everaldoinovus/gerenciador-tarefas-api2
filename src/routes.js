@@ -33,53 +33,12 @@ const checkSectorOwnershipForDeletion = async (req, res, next) => {
     }
 };
 
-/*router.post('/setores', authMiddleware, checkGlobalRole(['admin']), async (req, res) => { 
-	console.log(`[DEBUG] Rota GET /setores: Acessada pelo usuário ID: ${req.usuarioId} com role: ${req.role}`);
+router.post('/setores', authMiddleware, checkGlobalRole(['admin']), async (req, res) => { 
 	const { 
 		nome } = req.body; const usuarioId = req.usuarioId; if (!nome) return res.status(400).json({ error: 'O nome do setor é obrigatório.' }); let connection; try { connection = await pool.getConnection(); await connection.beginTransaction(); const [setorResult] = await connection.query('INSERT INTO setores (nome) VALUES (?)', [nome]); const novoSetorId = setorResult.insertId; await connection.query('INSERT INTO usuarios_setores (usuario_id, setor_id, funcao) VALUES (?, ?, ?)', [usuarioId, novoSetorId, 'dono']); const statusPadrao = [{ nome: 'Pendente', ordem: 1 }, { nome: 'Em Andamento', ordem: 2 }, { nome: 'Concluído', ordem: 3 }]; for (const status of statusPadrao) { await connection.query('INSERT INTO status (nome, setor_id, ordem) VALUES (?, ?, ?)', [status.nome, novoSetorId, status.ordem]); } await connection.commit(); res.status(201).json({ message: 'Setor criado com sucesso!', id: novoSetorId }); } catch (error) { if (connection) await connection.rollback(); if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Este setor já existe.' }); console.error("Erro ao criar setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } finally { if (connection) connection.release(); } });
-*/
 
-router.get('/setores', authMiddleware, async (req, res) => {
-    const usuarioId = req.usuarioId;
-    const userRole = req.role; // Obtém o 'role' do middleware
 
-    try {
-        let sql;
-        let params;
 
-        // SE O USUÁRIO FOR ADMIN, mostra TODOS os setores.
-        if (userRole === 'admin') {
-            console.log(`[DEBUG] Rota GET /setores: Acessada por ADMIN (ID: ${usuarioId}). Buscando todos os setores.`);
-            // Para um admin, precisamos simular a coluna 'funcao' para consistência.
-            // Aqui, apenas marcamos como 'admin' para indicar o poder total.
-            sql = `
-                SELECT s.*, 'admin' AS funcao 
-                FROM setores s 
-                ORDER BY s.nome ASC;
-            `;
-            params = []; // Sem parâmetros
-        } 
-        // SE FOR UM USUÁRIO COMUM, mostra apenas os setores dos quais ele é membro.
-        else {
-            console.log(`[DEBUG] Rota GET /setores: Acessada por USER (ID: ${usuarioId}). Buscando setores associados.`);
-            sql = `
-                SELECT s.*, us.funcao 
-                FROM setores s 
-                JOIN usuarios_setores us ON s.id = us.setor_id 
-                WHERE us.usuario_id = ? 
-                ORDER BY s.nome ASC;
-            `;
-            params = [usuarioId];
-        }
-
-        const [rows] = await pool.query(sql, params);
-        res.status(200).json(rows);
-
-    } catch (error) {
-        console.error("Erro ao listar setores:", error);
-        res.status(500).json({ error: 'Erro interno do servidor.' });
-    }
-});
 router.get('/setores', authMiddleware, async (req, res) => { const usuarioId = req.usuarioId; try { const sql = ` SELECT s.*, us.funcao FROM setores s JOIN usuarios_setores us ON s.id = us.setor_id WHERE us.usuario_id = ? ORDER BY s.nome ASC; `; const [rows] = await pool.query(sql, [usuarioId]); res.status(200).json(rows); } catch (error) { console.error("Erro ao listar setores:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.get('/setores/:id/status', authMiddleware, async (req, res) => { const { id: setorId } = req.params; const usuarioId = req.usuarioId; try { const [permRows] = await pool.query('SELECT 1 FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioId, setorId]); if (permRows.length === 0) return res.status(403).json({ error: 'Acesso negado a este setor.' }); const [statusRows] = await pool.query('SELECT * FROM status WHERE setor_id = ? ORDER BY ordem ASC', [setorId]); res.status(200).json(statusRows); } catch (error) { console.error("Erro ao listar status do setor:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
 router.post('/setores/:id/convidar', authMiddleware, checkMembership, checkOwnership, async (req, res) => { const { id: setorId } = req.params; const { email: emailConvidado } = req.body; const usuarioConvidouId = req.usuarioId; if (!emailConvidado) return res.status(400).json({ error: 'O e-mail do convidado é obrigatório.' }); try { const [userRows] = await pool.query('SELECT id FROM usuarios WHERE email = ?', [emailConvidado]); if (userRows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado.' }); const usuarioConvidadoId = userRows[0].id; const [memberRows] = await pool.query('SELECT id FROM usuarios_setores WHERE usuario_id = ? AND setor_id = ?', [usuarioConvidadoId, setorId]); if (memberRows.length > 0) return res.status(409).json({ error: 'Este usuário já é membro do setor.' }); await pool.query('INSERT INTO convites (setor_id, email_convidado, usuario_convidou_id) VALUES (?, ?, ?)', [setorId, emailConvidado, usuarioConvidouId]); res.status(201).json({ message: `Convite enviado para ${emailConvidado} com sucesso.` }); } catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Um convite para este usuário já está pendente.' }); console.error("Erro ao criar convite:", error); res.status(500).json({ error: 'Erro interno do servidor.' }); } });
