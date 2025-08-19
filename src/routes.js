@@ -63,6 +63,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
     const updates = req.body;
     const usuarioId = req.usuarioId;
     let connection;
+
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
@@ -85,27 +86,7 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
 
         const statusAtualId = tarefaAtual.status_id;
 
-        if (tarefaAtual.tarefa_pai_id && updates.status_id && updates.status_id !== statusAtualId) {
-            // ===== LÓGICA DE ATIVAÇÃO DO FEEDBACK MODIFICADA =====
-            // 1. Descobre qual ação de automação gerou esta tarefa-filha
-            const [acaoOrigemRows] = await connection.query(
-                'SELECT a.* FROM acoes_automacao a JOIN tarefas t ON t.tarefa_pai_id = a.regra_id WHERE t.id = ? LIMIT 1',
-                [tarefaId]
-            );
-
-            // 2. Se a ação for encontrada E a opção de feedback estiver ATIVA
-            if (acaoOrigemRows.length > 0 && acaoOrigemRows[0].ativar_feedback_analise) {
-                const [statusInicialRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [tarefaAtual.setor_id]);
-                if (statusInicialRows.length > 0) {
-                    const statusInicialId = statusInicialRows[0].id;
-                    if (statusAtualId === statusInicialId) {
-                        // 3. Somente então, ativa o feedback na tarefa-pai
-                        await connection.query("UPDATE tarefas SET status_vinculado = 'em_andamento' WHERE id = ?", [tarefaAtual.tarefa_pai_id]);
-                    }
-                }
-            }
-        }
-
+        // Lógica de atualização geral da tarefa
         const colunasPermitidas = ['descricao', 'responsavel_id', 'setor_id', 'status_id', 'data_prevista_conclusao', 'data_finalizacao', 'notas'];
         const fieldsToUpdate = Object.keys(updates).filter(key => colunasPermitidas.includes(key));
         if (fieldsToUpdate.length > 0) {
@@ -116,12 +97,73 @@ router.put('/tarefas/:id', authMiddleware, async (req, res) => {
             await connection.query(updateSql, values);
         }
 
+        // Lógica executada APENAS quando o status da tarefa muda
         if (updates.status_id && updates.status_id !== statusAtualId) {
-            // ... (resto da sua lógica de histórico, automação, etc., continua aqui sem alterações)
+            // 1. Registra a mudança no histórico
+            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaId, statusAtualId, updates.status_id, usuarioId]);
+            
+            // 2. Lógica de Feedback (se ESTA tarefa for uma filha)
+            if (tarefaAtual.tarefa_pai_id) {
+                // A. Lógica para LIGAR o feedback na tarefa-pai
+                const [acaoOrigemRows] = await connection.query('SELECT a.* FROM acoes_automacao a JOIN regras_automacao r ON a.regra_id = r.id JOIN tarefas t ON t.tarefa_pai_id = t.id WHERE t.id = ? AND a.setor_destino_id = ? LIMIT 1', [tarefaAtual.tarefa_pai_id, tarefaAtual.setor_id]);
+                if (acaoOrigemRows.length > 0 && acaoOrigemRows[0].ativar_feedback_analise) {
+                    const [statusInicialRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [tarefaAtual.setor_id]);
+                    if (statusInicialRows.length > 0 && statusAtualId === statusInicialRows[0].id) {
+                        await connection.query("UPDATE tarefas SET status_vinculado = 'em_andamento' WHERE id = ?", [tarefaAtual.tarefa_pai_id]);
+                    }
+                }
+                
+                // B. Lógica para DESLIGAR o feedback e mover a tarefa-pai
+                const [statusInfo] = await connection.query('SELECT nome FROM status WHERE id = ?', [updates.status_id]);
+                if (statusInfo.length > 0 && acaoOrigemRows.length > 0) {
+                    const nomeStatusNovo = statusInfo[0].nome.toLowerCase();
+                    const acao = acaoOrigemRows[0];
+                    let statusDestinoMae = null;
+                    if (nomeStatusNovo.includes('aprovado') && acao.status_retorno_sucesso_id) { statusDestinoMae = acao.status_retorno_sucesso_id; }
+                    else if (nomeStatusNovo.includes('negado') && acao.status_retorno_falha_id) { statusDestinoMae = acao.status_retorno_falha_id; }
+                    if (statusDestinoMae) {
+                        const [tarefaMaeAtualRows] = await connection.query('SELECT status_id FROM tarefas WHERE id = ?', [tarefaAtual.tarefa_pai_id]);
+                        if (tarefaMaeAtualRows.length > 0) {
+                            const tarefaMaeStatusAtual = tarefaMaeAtualRows[0].status_id;
+                            await connection.query("UPDATE tarefas SET status_id = ?, status_vinculado = 'aguardando' WHERE id = ?", [statusDestinoMae, tarefaAtual.tarefa_pai_id]);
+                            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_anterior_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?, ?)', [tarefaAtual.tarefa_pai_id, tarefaMaeStatusAtual, statusDestinoMae, usuarioId]);
+                        }
+                    }
+                }
+            }
+            
+            // 3. ===== LÓGICA DE CRIAÇÃO DE NOVAS TAREFAS (RESTAURADA) =====
+            // Verifica se a movimentação desta tarefa (que é uma PAI) dispara alguma regra.
+            const [regras] = await connection.query('SELECT * FROM regras_automacao WHERE setor_origem_id = ? AND status_gatilho_id = ?', [setorAtualId, updates.status_id]);
+            if (regras.length > 0) {
+                 for (const regra of regras) {
+                    const [acoes] = await connection.query('SELECT * FROM acoes_automacao WHERE regra_id = ?', [regra.id]);
+                    for (const acao of acoes) {
+                        let novaDescricao = acao.template_descricao || `Gerado por: ${tarefaAtual.descricao}`;
+                        novaDescricao = novaDescricao.replace(/{descricao_original}/g, tarefaAtual.descricao).replace(/{id_original}/g, tarefaAtual.id);
+                        
+                        const [statusDestinoRows] = await connection.query('SELECT id FROM status WHERE setor_id = ? ORDER BY ordem ASC LIMIT 1', [acao.setor_destino_id]);
+                        if (statusDestinoRows.length > 0) {
+                            const statusInicialDestinoId = statusDestinoRows[0].id;
+                            let dataConclusaoNovaTarefa = null;
+                            if (acao.tipo_prazo === 'copiar') { dataConclusaoNovaTarefa = tarefaAtual.data_prevista_conclusao; } 
+                            else if (acao.tipo_prazo === 'dias' && acao.valor_prazo > 0) { const novaData = new Date(); novaData.setDate(novaData.getDate() + acao.valor_prazo); dataConclusaoNovaTarefa = novaData; }
+                            
+                            const insertSql = `INSERT INTO tarefas (descricao, setor_id, status_id, tarefa_pai_id, data_prevista_conclusao) VALUES (?, ?, ?, ?, ?);`;
+                            const insertValues = [novaDescricao, acao.setor_destino_id, statusInicialDestinoId, tarefaAtual.id, dataConclusaoNovaTarefa];
+                            const [novaTarefaResult] = await connection.query(insertSql, insertValues);
+                            const novaTarefaId = novaTarefaResult.insertId;
+                            
+                            await connection.query('INSERT INTO historico_status_tarefas (tarefa_id, status_novo_id, usuario_alteracao_id) VALUES (?, ?, ?)', [novaTarefaId, statusInicialDestinoId, usuarioId]);
+                        }
+                    }
+                }
+            }
         }
         
         await connection.commit();
         res.status(200).json({ message: 'Tarefa atualizada!' });
+
     } catch (error) {
         if (connection) await connection.rollback();
         console.error("Erro ao atualizar tarefa:", error);
